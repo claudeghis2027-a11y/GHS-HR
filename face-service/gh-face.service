@@ -1,0 +1,49 @@
+# /etc/systemd/system/gh-face.service — GHIS HR face verification (YuNet + SFace, CPU only).
+[Unit]
+Description=GHIS HR face service
+Requires=gh-face.socket
+After=gh-face.socket
+
+[Service]
+Type=simple
+User=gh-face
+Group=gh-face
+EnvironmentFile=/etc/gh-face/env
+Environment=GH_FACE_MODELS=/opt/gh-face/models GH_FACE_THREADS=2 OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 PYTHONDONTWRITEBYTECODE=1
+# No GPU on the server: keep OpenCV from probing OpenCL devices/caches.
+Environment=OPENCV_OPENCL_RUNTIME=disabled OPENCV_OPENCL_DEVICE=disabled OPENCV_LOG_LEVEL=ERROR
+ExecStart=/opt/gh-face/venv/bin/python /opt/gh-face/face_service.py
+Restart=on-failure
+RestartSec=3
+
+# Resource limits (server: 4 CPU, 5.8 GB RAM)
+MemoryMax=700M
+CPUQuota=200%
+TasksMax=64
+
+# Hardening: no network at all (the socket is handed over by systemd), read-only system, no home dirs.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

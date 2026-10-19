@@ -1,0 +1,17 @@
+# أسرار وبيانات السيرفير — ممنوع ترفع على GitHub
+config/config.php
+config/.env
+*.env
+*.env.txt
+.env*
+storage/
+# بيانات الموظفين ونسخ قواعد البيانات
+*.xlsx
+*.xls
+*.csv
+*.sql.gz
+# حزم النشر المضغوطة (الكود اللي جواها موجود في المستودع نفسه)
+*.zip
+*.rar
+_claude_tmp/
+.DS_Store

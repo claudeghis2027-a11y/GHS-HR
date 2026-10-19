@@ -1,0 +1,15 @@
+# /etc/systemd/system/gh-face.socket — unix socket for the GHIS HR face service.
+# systemd (root) creates the socket; only user tarek (the gh-hr PHP pool) and gh-face can use it.
+[Unit]
+Description=GHIS HR face service socket
+
+[Socket]
+ListenStream=/run/gh-face/face.sock
+SocketUser=gh-face
+SocketGroup=tarek
+SocketMode=0660
+DirectoryMode=0755
+Accept=no
+
+[Install]
+WantedBy=sockets.target
