@@ -658,3 +658,96 @@ ALTER TABLE face_match_log ADD COLUMN IF NOT EXISTS metrics VARCHAR(600) NULL;
 -- UI language per user
 ALTER TABLE users ADD COLUMN IF NOT EXISTS locale VARCHAR(5) NULL;
 -- English consent text (shown to users who chose English)
+
+-- ───────────────────────── Phase 1: old-GHIS payroll & attendance parity ─────────────────────────
+-- Attendance adjustments: the five old types (manual present/absent added; waive_day = exclude the day)
+ALTER TABLE attendance_adjustments MODIFY adj_type ENUM('set_check_in','set_check_out','force_present','force_absent','waive_day','other') NOT NULL;
+-- Per-department salary rates (old settings «نسبة العلاوة — قسم» / «نسبة خصم الربع — قسم»; NULL quarter = 25%)
+ALTER TABLE departments ADD COLUMN IF NOT EXISTS allowance_rate DECIMAL(6,2) NULL;
+ALTER TABLE departments ADD COLUMN IF NOT EXISTS quarter_rate DECIMAL(6,2) NULL;
+-- Year settings keep months as YYYY-MM like the old sheet
+ALTER TABLE payroll_year_settings MODIFY raise_month VARCHAR(7) NULL;
+ALTER TABLE payroll_year_settings MODIFY quarter_refund_month VARCHAR(7) NULL;
+ALTER TABLE payroll_year_settings ADD UNIQUE KEY IF NOT EXISTS uq_year (academic_year_id);
+ALTER TABLE quarter_deduction_policy ADD COLUMN IF NOT EXISTS month_key VARCHAR(7) NULL;
+ALTER TABLE quarter_deduction_policy MODIFY month_no TINYINT NULL;
+ALTER TABLE quarter_deduction_policy ADD UNIQUE KEY IF NOT EXISTS uq_policy (academic_year_id, department_id, month_key);
+-- Summer deduction: one row per employee / month / year (the old calculation is idempotent on that key)
+ALTER TABLE summer_deduction_log ADD UNIQUE KEY IF NOT EXISTS uq_emp_month (employee_id, month_no, year_no);
+
+-- ───────────────────────── Phase 2: closing, reopen, advances ─────────────────────────
+-- Closing snapshots: building → ready → superseded (old ClosingSnapshots.state); the period name as it was when closed
+ALTER TABLE payroll_snapshots ADD COLUMN IF NOT EXISTS period_name VARCHAR(100) NULL;
+ALTER TABLE payroll_snapshots ADD COLUMN IF NOT EXISTS state ENUM('building','ready','superseded') NOT NULL DEFAULT 'ready';
+ALTER TABLE payroll_snapshots ADD KEY IF NOT EXISTS idx_period_state (period_id, state);
+-- Advances are cancelled with a reason (old advanceCancel)
+ALTER TABLE advances ADD COLUMN IF NOT EXISTS cancel_reason VARCHAR(500) NULL;
+ALTER TABLE advances ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(64) NULL;
+ALTER TABLE advances ADD COLUMN IF NOT EXISTS cancelled_at DATETIME NULL;
+
+-- ───────────────────────── Phase 3: employees, documents, investigations, notifications, holidays ─────────────────────────
+-- Documents: soft delete keeps the record and its file (old «محذوف؟»)
+ALTER TABLE employee_documents ADD COLUMN IF NOT EXISTS is_deleted TINYINT(1) NOT NULL DEFAULT 0;
+ALTER TABLE employee_documents ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(64) NULL;
+ALTER TABLE employee_documents ADD COLUMN IF NOT EXISTS deleted_at DATETIME NULL;
+-- Investigations: INV-000001 numbers; editing saves a new version (the old one is kept, superseded); cancel with a reason
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS inv_no VARCHAR(20) NULL;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS superseded_by INT UNSIGNED NULL;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS cancel_reason VARCHAR(500) NULL;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(64) NULL;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS cancelled_at DATETIME NULL;
+ALTER TABLE investigations ADD KEY IF NOT EXISTS idx_inv_no (inv_no);
+UPDATE investigations SET inv_no = legacy_id WHERE inv_no IS NULL AND legacy_id REGEXP '^INV-[0-9]+$';
+-- Notifications are cancelled with a reason (old notifications.cancel)
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS cancel_reason VARCHAR(500) NULL;
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(64) NULL;
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS cancelled_at DATETIME NULL;
+-- a notification can target several departments / employees ("3,7,12")
+ALTER TABLE notifications MODIFY scope_value TEXT NULL;
+
+-- ───────── Old employee app parity: notification content items, remember-me ─────────
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS contents VARCHAR(200) NULL;
+CREATE TABLE IF NOT EXISTS remember_tokens (
+  id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id    INT UNSIGNED NOT NULL,
+  selector   CHAR(18) NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  epoch      INT NOT NULL,
+  ua_hash    CHAR(64) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_rt_selector (selector),
+  KEY ix_rt_user (user_id),
+  CONSTRAINT fk_rt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ───────── Banks: managed by admin / super admin; an employee paid by card (فيزا) picks one ─────────
+CREATE TABLE IF NOT EXISTS banks (
+  id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name       VARCHAR(150) NOT NULL UNIQUE,
+  active     TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS bank_id INT UNSIGNED NULL AFTER pay_method;
+ALTER TABLE employees ADD KEY IF NOT EXISTS idx_bank (bank_id);
+
+-- ───────── Specialization (التخصص): what the employee does inside the department (subject taught, HR, IT, cleaning...) ─────────
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS specialization VARCHAR(150) NULL AFTER department_id;
+
+-- ───────── Specializations list (التخصصات): managed like departments / job titles; the employee picks one ─────────
+CREATE TABLE IF NOT EXISTS specializations (
+  id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name       VARCHAR(150) NOT NULL UNIQUE,
+  active     TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- starter list, only while the table is still empty (so a renamed or deactivated one never comes back)
+INSERT INTO specializations (name) SELECT n FROM (SELECT 'عربي' AS n UNION ALL SELECT 'إنجليزي' UNION ALL SELECT 'فرنساوي' UNION ALL SELECT 'ألماني' UNION ALL SELECT 'رياضيات' UNION ALL SELECT 'علوم' UNION ALL SELECT 'فيزياء' UNION ALL SELECT 'كيمياء' UNION ALL SELECT 'أحياء' UNION ALL SELECT 'دراسات اجتماعية' UNION ALL SELECT 'دين' UNION ALL SELECT 'حاسب آلي' UNION ALL SELECT 'تربية رياضية' UNION ALL SELECT 'تربية فنية' UNION ALL SELECT 'موسيقى' UNION ALL SELECT 'رياض أطفال' UNION ALL SELECT 'حسابات' UNION ALL SELECT 'HR' UNION ALL SELECT 'Admission' UNION ALL SELECT 'IT' UNION ALL SELECT 'شؤون طلاب' UNION ALL SELECT 'سكرتارية' UNION ALL SELECT 'مشتريات' UNION ALL SELECT 'مخازن' UNION ALL SELECT 'نظافة' UNION ALL SELECT 'زراعة' UNION ALL SELECT 'أمن' UNION ALL SELECT 'صيانة' UNION ALL SELECT 'سواق' UNION ALL SELECT 'مشرف باص' UNION ALL SELECT 'عيادة') d WHERE NOT EXISTS (SELECT 1 FROM specializations);
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS specialization_id INT UNSIGNED NULL AFTER department_id;
+ALTER TABLE employees ADD KEY IF NOT EXISTS idx_spec (specialization_id);
+-- move the free-text specializations typed before the list existed into the list, then link them
+INSERT IGNORE INTO specializations (name) SELECT DISTINCT TRIM(specialization) FROM employees WHERE specialization_id IS NULL AND TRIM(COALESCE(specialization, '')) <> '';
+UPDATE employees e JOIN specializations s ON s.name = TRIM(e.specialization) SET e.specialization_id = s.id WHERE e.specialization_id IS NULL AND TRIM(COALESCE(e.specialization, '')) <> '';
+UPDATE employees SET specialization = NULL WHERE specialization_id IS NOT NULL AND specialization IS NOT NULL;
+-- the profile field is now specialization_id (seed.sql adds it with the same defaults)
+DELETE FROM employee_field_permissions WHERE field = 'specialization';

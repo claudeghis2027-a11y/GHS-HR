@@ -36,7 +36,7 @@ $name = user()['display_name'] ?: (user()['employee_id'] ? q_val('SELECT name_ar
 </div>
 <div class="grid2">
   <?php if (can('attendance')): ?><div class="card"><h3><?= e(__('الحضور')) ?></h3><p class="muted"><?= e(__('التقرير الشهري بالتأخير والغياب والخصومات.')) ?></p><a class="btn" href="<?= e(url('att_report')) ?>"><?= e(__('التقرير الشهري')) ?></a></div><?php endif; ?>
-  <?php if (can('salary')): ?><div class="card"><h3><?= e(__('المرتبات')) ?></h3><p class="muted"><?= e(__('كشف المرتبات للشهر، وإقفال الفترة.')) ?></p><a class="btn" href="<?= e(url('payroll')) ?>"><?= e(__('كشف المرتبات')) ?></a></div><?php endif; ?>
+  <?php if (can('payroll')): ?><div class="card"><h3><?= e(__('المرتبات')) ?></h3><p class="muted"><?= e(__('كشف المرتبات للشهر، وإقفال الفترة.')) ?></p><a class="btn" href="<?= e(url('payroll')) ?>"><?= e(__('كشف المرتبات')) ?></a></div><?php endif; ?>
   <?php if (can('employees')): ?><div class="card"><h3><?= e(__('الموظفين')) ?></h3><p class="muted"><?= e(__('بيانات الموظفين، والرفع من Excel.')) ?></p><a class="btn" href="<?= e(url('list', ['res' => 'employees'])) ?>"><?= e(__('الموظفين')) ?></a></div><?php endif; ?>
 </div>
 <?php endif; ?>

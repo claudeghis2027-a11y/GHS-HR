@@ -13,7 +13,7 @@
     <thead><tr><th><?= e(__('القسم')) ?></th><th><?= e(__('عرض')) ?></th><th><?= e(__('إضافة')) ?></th><th><?= e(__('تعديل')) ?></th><th><?= e(__('حذف')) ?></th><th><?= e(__('تصدير')) ?></th></tr></thead>
     <tbody>
     <?php foreach (MODULES as $m => $label): $p = $perms[$r['id']][$m] ?? []; ?>
-      <tr><td><?= e(__($label)) ?></td>
+      <tr><td><?php if (isset(MODULE_PARENT[$m])): ?>↳ <?= e(__($label)) ?> <small class="muted"><?= e(__('(بتيجي تلقائي مع «%s»)', __(MODULES[MODULE_PARENT[$m]]))) ?></small><?php else: ?><strong><?= e(__($label)) ?></strong><?php endif; ?></td>
       <?php foreach (ACTIONS as $a): ?><td><input type="checkbox" name="p[<?= e($m) ?>][<?= $a ?>]" value="1" <?= !empty($p['can_' . $a]) ? 'checked' : '' ?> aria-label="<?= e(__($label) . ' / ' . $a) ?>"></td><?php endforeach; ?>
       </tr>
     <?php endforeach; ?>

@@ -171,16 +171,28 @@ function page_emp_photo_post(): void
 {
     $id = in_int('id');
     if ($id === null || !can('employees', 'update') || !can_see_employee($id)) http_error(403);
+    $back = users_back() ?? url('form', ['res' => 'employees', 'id' => $id]);
+    if (($_POST['op'] ?? '') === 'delete') { // old employees.photo.delete
+        $old = q_val('SELECT official_photo FROM employees WHERE id = ?', [$id]);
+        if ($old) {
+            q('UPDATE employees SET official_photo = NULL WHERE id = ?', [$id]);
+            face_delete_file($old);
+            q('INSERT INTO employee_change_log (employee_id, field, old_value, new_value, changed_by) VALUES (?,?,?,?,?)', [$id, 'official_photo', 'صورة سابقة', null, user()['username']]);
+            audit('employee.official_photo_deleted', $id);
+        }
+        flash('ok', __('تم حذف الصورة.'));
+        redirect($back);
+    }
     $f = $_FILES['photo'] ?? null;
     if (!is_array($f) || ($f['error'] ?? 1) !== UPLOAD_ERR_OK || !is_uploaded_file($f['tmp_name']) || $f['size'] > 3 * 1024 * 1024) {
-        flash('err', __('اختار صورة JPG أو PNG أقل من 3 ميجا.')); redirect(url('form', ['res' => 'employees', 'id' => $id]));
+        flash('err', __('اختار صورة JPG أو PNG أقل من 3 ميجا.')); redirect($back);
     }
     $bytes = (string)file_get_contents($f['tmp_name']);
     @unlink($f['tmp_name']);
     $mime = (new finfo(FILEINFO_MIME_TYPE))->buffer($bytes);
     $info = @getimagesizefromstring($bytes);
     if (!in_array($mime, ['image/jpeg', 'image/png'], true) || !$info || $info[0] < 100 || $info[1] < 100) {
-        flash('err', __('الملف لازم يكون صورة JPG أو PNG.')); redirect(url('form', ['res' => 'employees', 'id' => $id]));
+        flash('err', __('الملف لازم يكون صورة JPG أو PNG.')); redirect($back);
     }
     $old = q_val('SELECT official_photo FROM employees WHERE id = ?', [$id]);
     $rel = face_store_file('official', $bytes);
@@ -189,7 +201,7 @@ function page_emp_photo_post(): void
     q('INSERT INTO employee_change_log (employee_id, field, old_value, new_value, changed_by) VALUES (?,?,?,?,?)', [$id, 'official_photo', $old ? 'صورة سابقة' : null, 'صورة جديدة', user()['username']]);
     audit('employee.official_photo', $id);
     flash('ok', __('تم حفظ الصورة الرسمية.'));
-    redirect(url('form', ['res' => 'employees', 'id' => $id]));
+    redirect($back);
 }
 
 // ═════════════ HR: face review queue ═════════════
@@ -255,9 +267,9 @@ function page_face_stats(): void
     $from = valid_date($_GET['from'] ?? null) ?? date('Y-m-d', strtotime('-30 days'));
     $to = valid_date($_GET['to'] ?? null) ?? date('Y-m-d');
     $rows = q_all('SELECT employee_id, at, kind, result, distance, counted, device, metrics FROM face_match_log WHERE kind IS NOT NULL AND at >= ? AND at < ? + INTERVAL 1 DAY ORDER BY at', [$from, $to]);
-    if (($_GET['export'] ?? '') === 'csv') {
-        audit('export.csv', 'face_stats', "$from..$to");
-        send_csv("face-attempts-$from-$to.csv", ['employee', 'time', 'kind', 'result', 'score', 'yaw_range', 'motion', 'brightness', 'sharpness', 'same_person', 'ms', 'device'],
+    if (export_format()) {
+        audit('export.' . export_format(), 'face_stats', "$from..$to");
+        send_export(__('محاولات بصمة الوجه'), "face-attempts-$from-$to", ['employee', 'time', 'kind', 'result', 'score', 'yaw_range', 'motion', 'brightness', 'sharpness', 'same_person', 'ms', 'device'],
             array_map(function ($r) {
                 $m = json_decode((string)$r['metrics'], true) ?: [];
                 return [$r['employee_id'], $r['at'], $r['kind'], $r['result'], $r['distance'], $m['yaw_range'] ?? '', $m['motion'] ?? '', $m['brightness'] ?? '', $m['sharpness'] ?? '', $m['same_person'] ?? '', $m['ms'] ?? '', $r['device']];

@@ -20,6 +20,9 @@ function page_login_post(): void
         page_login(['error' => $r['msg'], 'username' => $username]);
         return;
     }
+    if (($_POST['remember'] ?? '') === '1' && !q_val('SELECT r.is_staff FROM roles r WHERE r.id = ?', [$r['user']['role_id']]) && $r['user']['employee_id'] !== null) {
+        remember_issue($r['user']);
+    }
     redirect(url());
 }
 
@@ -38,6 +41,7 @@ function page_lang_post(): void
 function page_logout(): void
 {
     audit('auth.logout', user()['username']);
+    remember_forget();
     destroy_session();
     redirect(url('login'));
 }
@@ -61,6 +65,7 @@ function page_password_post(): void
     if ($p = password_problems($new, $u['username'])) { page_password(['error' => $p]); return; }
     q('UPDATE users SET password_hash = ?, legacy_hash = NULL, legacy_salt = NULL, must_change_password = 0, password_changed_at = NOW(), session_epoch = session_epoch + 1 WHERE id = ?', [hash_password($new), $u['id']]);
     $_SESSION['epoch'] = (int)$u['session_epoch'] + 1; // keep this session, kill the others
+    if (!empty($_COOKIE[remember_cookie()])) { remember_forget(); remember_issue(['session_epoch' => $_SESSION['epoch']] + $u); } // this device stays remembered
     session_regenerate_id(true);
     audit('password.changed', $u['username']);
     flash('ok', __('تم تغيير كلمة المرور.'));
@@ -100,6 +105,63 @@ function self_employee(): array
     return $e;
 }
 
+/** The attendance point nearest to a reading, and whether the reading is inside it (its radius + up to 30 m of GPS error). */
+function geo_nearest(float $lat, float $lng, float $acc): array
+{
+    $best = null;
+    foreach (q_all('SELECT * FROM attendance_points WHERE active = 1 AND lat IS NOT NULL AND lng IS NOT NULL') as $p) {
+        $d = haversine($lat, $lng, (float)$p['lat'], (float)$p['lng']);
+        if ($best === null || $d - $p['radius_m'] < $best['d'] - $best['p']['radius_m']) $best = ['p' => $p, 'd' => $d];
+    }
+    return [$best, $best && $best['d'] <= $best['p']['radius_m'] + min($acc, 30)];
+}
+
+// ── Old employee app location gate: an employee's own data, documents and reports open only inside the school ──
+const GEO_GATE_SECONDS = 600; // one check is good for 10 minutes
+
+function geo_gate_active(): bool
+{
+    return my_employee_id() !== null && !is_staff() && setting('self_geo_gate', '1') === '1'
+        && q_val('SELECT 1 FROM attendance_points WHERE active = 1 AND lat IS NOT NULL AND lng IS NOT NULL LIMIT 1');
+}
+
+function geo_gate_ok(): bool
+{
+    return !geo_gate_active() || (int)($_SESSION['geo_ok_until'] ?? 0) >= time();
+}
+
+/** Shows the location check (on the same address) instead of the page until the employee is inside the school. */
+function geo_gate_require(): void
+{
+    if (geo_gate_ok()) return;
+    $q = array_filter($_GET, fn($v, $k) => is_string($v) && is_string($k), ARRAY_FILTER_USE_BOTH);
+    render('geo_check', ['title' => __('التحقق من الموقع'), 'back' => url('', $q)]);
+    exit;
+}
+
+function page_geo_check_post(): void
+{
+    require_employee_self();
+    $back = users_back() ?? url();
+    $lat = filter_var($_POST['lat'] ?? null, FILTER_VALIDATE_FLOAT);
+    $lng = filter_var($_POST['lng'] ?? null, FILTER_VALIDATE_FLOAT);
+    $acc = filter_var($_POST['acc'] ?? null, FILTER_VALIDATE_FLOAT);
+    $ok = false;
+    if ($lat !== false && $lng !== false && $lat !== null && $lng !== null && abs($lat) <= 90 && abs($lng) <= 180) {
+        [, $ok] = geo_nearest((float)$lat, (float)$lng, ($acc === false || $acc === null) ? 9999.0 : max(0.0, (float)$acc));
+    }
+    if ($ok) { $_SESSION['geo_ok_until'] = time() + GEO_GATE_SECONDS; redirect($back); }
+    unset($_SESSION['geo_ok_until']);
+    audit('geo_gate.outside', my_employee_id(), $lat === false || $lat === null ? 'no_fix' : 'outside');
+    render('geo_check', ['title' => __('التحقق من الموقع'), 'back' => $back, 'outside' => true]);
+}
+
+/** Seconds left before the next check-in attempt is allowed. */
+function checkin_wait(): int
+{
+    return max(0, (int)setting('checkin_cooldown_sec', '30') - (time() - (int)($_SESSION['checkin_last'] ?? 0)));
+}
+
 function page_checkin(): void
 {
     $e = self_employee();
@@ -109,7 +171,7 @@ function page_checkin(): void
         'hr_review' => face_streak((int)$e['id'])['status'] === 'hr_review',
         'title' => __('تسجيل الحضور والانصراف'), 'emp' => $e,
         'today' => q_one('SELECT * FROM attendance WHERE employee_id = ? AND work_date = CURDATE()', [$e['id']]),
-        'require_photo' => setting('checkin_require_photo', '0') === '1',
+        'require_photo' => setting('checkin_require_photo', '0') === '1', 'wait' => checkin_wait(),
     ]);
 }
 
@@ -118,6 +180,12 @@ function page_checkin_post(): void
     $e = self_employee();
     $action = $_POST['action'] ?? '';
     if (!in_array($action, ['in', 'out'], true)) http_error(400);
+    // Old app: 30 seconds between attempts. A repeat of the attempt already handled (the browser retrying after a lost reply) just shows its result.
+    $attempt = is_string($_POST['attempt'] ?? null) && preg_match('/^[A-Za-z0-9-]{8,40}$/', $_POST['attempt']) ? $_POST['attempt'] : '';
+    if ($attempt !== '' && $attempt === ($_SESSION['checkin_attempt'] ?? null)) redirect(url('checkin'));
+    if (($left = checkin_wait()) > 0) { flash('err', __('استنى %d ثانية قبل المحاولة الجاية.', $left)); redirect(url('checkin')); }
+    $_SESSION['checkin_last'] = time();
+    $_SESSION['checkin_attempt'] = $attempt;
     $fail = function (string $m) use ($action) { audit("checkin.$action.rejected", null, $m); flash('err', $m); redirect(url('checkin')); };
     if ($e['end_date'] && $e['end_date'] < date('Y-m-d')) $fail(__('خدمتك منتهية.'));
     if ($e['attendance_exempt'] || $e['dept_exempt']) $fail(__('إنت معفى من البصمة، مش محتاج تسجل.'));
@@ -128,12 +196,7 @@ function page_checkin_post(): void
     if ($lat === false || $lng === false || $lat === null || abs($lat) > 90 || abs($lng) > 180) $fail(__('مقدرناش نحدد موقعك. فعّل الـ GPS واسمح للمتصفح بالموقع.'));
     $acc = ($acc === false || $acc === null) ? 9999.0 : max(0.0, $acc);
 
-    $best = null;
-    foreach (q_all('SELECT * FROM attendance_points WHERE active = 1 AND lat IS NOT NULL AND lng IS NOT NULL') as $p) {
-        $d = haversine((float)$lat, (float)$lng, (float)$p['lat'], (float)$p['lng']);
-        if ($best === null || $d - $p['radius_m'] < $best['d'] - $best['p']['radius_m']) $best = ['p' => $p, 'd' => $d];
-    }
-    $within = $best && $best['d'] <= $best['p']['radius_m'] + min($acc, 30);
+    [$best, $within] = geo_nearest((float)$lat, (float)$lng, $acc);
     if (setting('geofence_enforce', '1') === '1' && !$within) {
         $fail($best ? __('إنت بعيد عن أقرب نقطة حضور (%s) بمسافة %d متر.', $best['p']['name'], (int)$best['d']) : __('مفيش نقاط حضور متسجلة. كلّم الإدارة.'));
     }
@@ -230,12 +293,27 @@ function page_photo(): void
 }
 
 // ═════════════ Attendance reports ═════════════
+/**
+ * The period of one employee's report (old employee app «من / إلى»): a payroll period, any from/to range
+ * (at most a year), a calendar month (?m=, older links), or else the current payroll period.
+ */
+function att_pick_range(): array
+{
+    $periods = q_all('SELECT * FROM payroll_periods ORDER BY date_from DESC LIMIT 36');
+    $per = ($pid = in_int('period', $_GET)) !== null ? q_one('SELECT * FROM payroll_periods WHERE id = ?', [$pid]) : null;
+    $gf = valid_date($_GET['from'] ?? null); $gt = valid_date($_GET['to'] ?? null);
+    if ($per) [$from, $to] = [$per['date_from'], $per['date_to']];
+    elseif ($gf && $gt && $gf <= $gt && strtotime($gt) - strtotime($gf) <= 366 * 86400) [$from, $to] = [$gf, $gt];
+    elseif ($ym = valid_month($_GET['m'] ?? null)) [$from, $to] = month_range($ym);
+    else [$from, $to, $per] = payroll_range(date('Y-m'));
+    return ['from' => $from, 'to' => $to, 'ym' => substr($from, 0, 7), 'per' => $per, 'periods' => $periods];
+}
+
 function page_my_attendance(): void
 {
     $id = require_employee_self();
-    $ym = valid_month($_GET['m'] ?? null) ?? date('Y-m');
-    [$from, $to] = month_range($ym);
-    render('att_days', ['title' => __('حضوري'), 'ym' => $ym, 'r' => att_evaluate($id, $from, $to), 'self' => true]);
+    $rg = att_pick_range();
+    render('att_days', $rg + ['title' => __('حضوري'), 'r' => att_evaluate($id, $rg['from'], $rg['to']), 'self' => true]);
 }
 
 function page_att_employee(): void
@@ -243,16 +321,21 @@ function page_att_employee(): void
     require_perm('attendance');
     $id = in_int('emp', $_GET);
     if ($id === null || !can_see_employee($id)) http_error(403);
-    $ym = valid_month($_GET['m'] ?? null) ?? date('Y-m');
-    [$from, $to] = month_range($ym);
-    render('att_days', ['title' => __('تفاصيل حضور موظف'), 'ym' => $ym, 'r' => att_evaluate($id, $from, $to), 'self' => false]);
+    $rg = att_pick_range();
+    render('att_days', $rg + ['title' => __('تفاصيل حضور موظف'), 'r' => att_evaluate($id, $rg['from'], $rg['to']), 'self' => false]);
 }
 
 function page_att_report(): void
 {
     require_perm('attendance');
-    $ym = valid_month($_GET['m'] ?? null) ?? date('Y-m');
-    [$from, $to] = month_range($ym);
+    // Old «اقفال شهري»: an official period, or any from/to range, or a calendar month.
+    $periods = q_all('SELECT * FROM payroll_periods ORDER BY date_from DESC');
+    $per = null;
+    if (($pid = in_int('period', $_GET)) !== null) $per = q_one('SELECT * FROM payroll_periods WHERE id = ?', [$pid]);
+    $gf = valid_date($_GET['from'] ?? null); $gt = valid_date($_GET['to'] ?? null);
+    if ($per) { [$from, $to] = [$per['date_from'], $per['date_to']]; $ym = substr($from, 0, 7); }
+    elseif ($gf && $gt && $gf <= $gt) { [$from, $to] = [$gf, $gt]; $ym = substr($from, 0, 7); }
+    else { $ym = valid_month($_GET['m'] ?? null) ?? date('Y-m'); [$from, $to, $per] = payroll_range($ym); }
     [$w, $p] = scope_sql('e');
     $dept = in_int('dept', $_GET);
     $sql = "SELECT e.id FROM employees e WHERE $w AND (e.hire_date IS NULL OR e.hire_date <= ?) AND (e.end_date IS NULL OR e.end_date >= ?)";
@@ -263,13 +346,14 @@ function page_att_report(): void
         $x = att_evaluate((int)$r['id'], $from, $to);
         $rows[] = ['emp' => $x['emp'], 't' => $x['totals']];
     }
-    if (($_GET['export'] ?? '') === 'csv') {
+    if (export_format()) {
         require_perm('attendance', 'export');
-        audit('export.csv', 'att_report', $ym);
-        send_csv("attendance-$ym.csv", [__('الكود'), __('الاسم'), __('القسم'), __('أيام العمل'), __('حضور'), __('غياب'), __('دقائق تأخير'), __('بدون انصراف'), __('أذونات'), __('إجمالي أيام الخصم')],
-            array_map(fn($r) => [$r['emp']['id'], $r['emp']['name_ar'], $r['emp']['dept_name'], $r['t']['work_days'], $r['t']['present'], $r['t']['absent'], $r['t']['late_min'], $r['t']['missing_out'], $r['t']['perms'], num($r['t']['total_days'])], $rows));
+        audit('export.' . export_format(), 'att_report', $ym);
+        send_export(__('تقرير الحضور الشهري'), "attendance-$from-$to", array_merge([__('الكود'), __('الاسم'), __('القسم'), __('أيام العمل'), __('حضور')], att_breakdown_headers()),
+            array_map(fn($r) => array_merge([$r['emp']['id'], $r['emp']['name_ar'], $r['emp']['dept_name'], $r['t']['work_days'], $r['t']['present']], array_map(fn($v) => is_float($v) ? num($v) : $v, att_breakdown_values($r['t']))), $rows));
     }
-    render('att_report', ['title' => __('تقرير الحضور الشهري'), 'ym' => $ym, 'rows' => $rows, 'dept' => $dept, 'depts' => fk_options(['fk' => ['departments', 'name']])]);
+    render('att_report', ['title' => __('تقرير الحضور الشهري'), 'ym' => $ym, 'rows' => $rows, 'dept' => $dept, 'depts' => fk_options(['fk' => ['departments', 'name']]),
+        'from' => $from, 'to' => $to, 'per' => $per, 'periods' => $periods, 'noRule' => array_sum(array_map(fn($r) => (int)$r['t']['absent_no_rule'], $rows))]);
 }
 
 // ═════════════ Salary ═════════════
@@ -277,67 +361,91 @@ function page_my_salary(): void
 {
     $id = require_employee_self();
     $ym = valid_month($_GET['m'] ?? null) ?? date('Y-m');
-    [$from, $to] = month_range($ym);
-    render('payslip', ['title' => __('مرتبي'), 'ym' => $ym, 'p' => payroll_compute($id, $from, $to), 'self' => true]);
+    [$from, $to, $per] = payroll_range($ym);
+    $snap = $per && $per['status'] === 'closed' ? period_snapshot((int)$per['id']) : null;
+    $pp = $snap ? (snapshot_rows((int)$snap['id'])[$id] ?? null) : payroll_compute($id, $from, $to, $ym);
+    if ($pp === null) http_error(404, __('مفيش مرتب محفوظ ليك في الفترة دي.'));
+    render('payslip', ['title' => __('مرتبي'), 'ym' => $ym, 'per' => $per, 'p' => $pp, 'self' => true, 'snap' => $snap]);
 }
 
 function page_payroll(): void
 {
-    require_perm('salary');
+    require_perm('payroll');
     $ym = valid_month($_GET['m'] ?? null) ?? date('Y-m');
-    [$from, $to] = month_range($ym);
+    [$from, $to, $per] = payroll_range($ym);
     $emp = in_int('emp', $_GET);
+    $dept = in_int('dept', $_GET);
+    $job = in_int('job', $_GET);
+    // Old monthlyClosing: a closed period is shown from its snapshot only, never recalculated live.
+    $snap = $per && $per['status'] === 'closed' ? period_snapshot((int)$per['id']) : null;
+    if ($per && $per['status'] === 'closed' && !$snap) {
+        flash('err', __('الفترة "%s" مقفولة، لكن مفيش نسخة إقفال محفوظة ليها. الأرقام مش هتتعرض عشان متبانش كأنها محمية وهي بتتحسب حيًّا. افتح الفترة تاني وأقفلها من جديد.', period_label($per)));
+        redirect(url('period', ['id' => $per['id']]));
+    }
     if ($emp !== null) {
         if (!can_see_employee($emp)) http_error(403);
-        render('payslip', ['title' => __('مفردات مرتب'), 'ym' => $ym, 'p' => payroll_compute($emp, $from, $to), 'self' => false]);
+        $pp = $snap ? (snapshot_rows((int)$snap['id'])[$emp] ?? null) : payroll_compute($emp, $from, $to, $ym);
+        if ($pp === null) http_error(404, __('الموظف ده مش موجود في نسخة الإقفال.'));
+        render('payslip', ['title' => __('مفردات مرتب'), 'ym' => $ym, 'per' => $per, 'p' => $pp, 'self' => false, 'snap' => $snap]);
+        return;
+    }
+    if ($snap) {
+        $rows = array_values(snapshot_rows((int)$snap['id'], $dept, $job));
+        payroll_export_csv($ym, $rows);
+        render('payroll', ['title' => __('كشف المرتبات'), 'ym' => $ym, 'per' => $per, 'from' => $snap['date_from'], 'to' => $snap['date_to'], 'rows' => $rows, 'periods' => [], 'dept' => $dept, 'job' => $job, 'snap' => $snap, 'gaps' => [],
+            'depts' => fk_options(['fk' => ['departments', 'name']]), 'jobs' => fk_options(['fk' => ['job_titles', 'name']])]);
         return;
     }
     [$w, $p] = scope_sql('e');
+    $sql = "SELECT e.id FROM employees e WHERE $w AND (e.hire_date IS NULL OR e.hire_date <= ?) AND (e.end_date IS NULL OR e.end_date >= ?)";
+    $p = array_merge($p, [$to, $from]);
+    if ($dept) { $sql .= ' AND e.department_id = ?'; $p[] = $dept; }
+    if ($job) { $sql .= ' AND e.job_title_id = ?'; $p[] = $job; }
     $rows = [];
-    foreach (q_all("SELECT e.id FROM employees e WHERE $w AND (e.hire_date IS NULL OR e.hire_date <= ?) AND (e.end_date IS NULL OR e.end_date >= ?) ORDER BY e.id", array_merge($p, [$to, $from])) as $r) {
-        $rows[] = payroll_compute((int)$r['id'], $from, $to);
+    foreach (q_all($sql . ' ORDER BY e.id', $p) as $r) {
+        $rows[] = payroll_compute((int)$r['id'], $from, $to, $ym);
     }
-    if (($_GET['export'] ?? '') === 'csv') {
-        require_perm('salary', 'export');
-        audit('export.csv', 'payroll', $ym);
-        send_csv("payroll-$ym.csv", [__('الكود'), __('الاسم'), __('القسم'), __('الأساسي'), __('الإضافات'), __('الخصومات'), __('السلف'), __('أيام خصم الحضور'), __('قيمة خصم الحضور'), __('الصافي')],
-            array_map(fn($r) => [$r['emp']['id'], $r['emp']['name_ar'], $r['emp']['dept_name'], money($r['basic']), money($r['additions']), money($r['deductions']), money($r['advances']), num($r['att_days']), money($r['att_amount']), money($r['net'])], $rows));
-    }
+    payroll_export_csv($ym, $rows);
     $periods = q_all("SELECT * FROM payroll_periods WHERE status = 'open' ORDER BY date_from DESC");
-    render('payroll', ['title' => __('كشف المرتبات'), 'ym' => $ym, 'rows' => $rows, 'periods' => $periods]);
+    $gaps = period_gaps();
+    render('payroll', ['title' => __('كشف المرتبات'), 'ym' => $ym, 'per' => $per, 'from' => $from, 'to' => $to, 'rows' => $rows, 'periods' => $periods, 'dept' => $dept, 'job' => $job, 'snap' => null, 'gaps' => $gaps,
+        'depts' => fk_options(['fk' => ['departments', 'name']]), 'jobs' => fk_options(['fk' => ['job_titles', 'name']])]);
 }
 
-/** Closes a payroll period: freezes a snapshot of every employee's computed pay. */
+/** Closes a payroll period (old ClosingService.close): pay + attendance grid snapshot; gaps between periods need an explicit OK. */
 function page_payroll_close(): void
 {
-    require_perm('salary', 'update');
+    require_perm('period_close', 'update');
     if (dept_scope() !== null) http_error(403, __('إقفال الفترة متاح بس لمستخدم صلاحيته على كل الأقسام.'));
     $pid = in_int('period_id');
-    $per = $pid ? q_one("SELECT * FROM payroll_periods WHERE id = ? AND status = 'open'", [$pid]) : null;
-    if (!$per) http_error(400);
-    $by = user()['username'];
-    db()->beginTransaction();
-    $emps = q_all('SELECT e.id, e.name_ar, d.name dept FROM employees e LEFT JOIN departments d ON d.id = e.department_id
-                   WHERE (e.hire_date IS NULL OR e.hire_date <= ?) AND (e.end_date IS NULL OR e.end_date >= ?) ORDER BY e.id', [$per['date_to'], $per['date_from']]);
-    q('INSERT INTO payroll_snapshots (period_id, date_from, date_to, employees, closed_by) VALUES (?,?,?,?,?)', [$pid, $per['date_from'], $per['date_to'], count($emps), $by]);
-    $sid = (int)db()->lastInsertId();
-    foreach ($emps as $e) {
-        $c = payroll_compute((int)$e['id'], $per['date_from'], $per['date_to']);
-        unset($c['emp']);
-        q('INSERT INTO payroll_snapshot_rows (snapshot_id, employee_id, name_ar, department, data_json) VALUES (?,?,?,?,?)', [$sid, $e['id'], $e['name_ar'], $e['dept'], json_encode($c, JSON_UNESCAPED_UNICODE)]);
+    if ($pid === null) http_error(400);
+    try {
+        $r = period_close($pid, user()['username'], (string)in_str('reason', 500), ($_POST['ack_gaps'] ?? '') === '1');
+    } catch (RuntimeException $ex) {
+        flash('err', $ex->getMessage());
+        redirect(url('period', ['id' => $pid]));
     }
-    q("UPDATE payroll_periods SET status = 'closed', closed_by = ?, closed_at = NOW() WHERE id = ?", [$by, $pid]);
-    q('INSERT INTO payroll_period_log (period_id, action, done_by, reason) VALUES (?,?,?,?)', [$pid, 'close', $by, in_str('reason', 500)]);
-    audit('period.close', $pid, ['snapshot' => $sid, 'employees' => count($emps)]);
-    db()->commit();
-    flash('ok', __('تم إقفال الفترة وحفظ نسخة من المرتبات.'));
-    redirect(url('list', ['res' => 'payroll_periods']));
+    if (!$r['ok']) {
+        flash('err', __('فيه أيام مش متغطية بين الفترات الرسمية: %s. علّم على «موافق على الفجوات» عشان تقفل.', gaps_text($r['gaps'])));
+        redirect(url('period', ['id' => $pid]));
+    }
+    flash('ok', __('تم إقفال الفترة وحفظ نسخة من المرتبات وشبكة الحضور (%d موظف).', $r['employees']));
+    redirect(url('period', ['id' => $pid]));
+}
+
+function payroll_export_csv(string $ym, array $rows): void
+{
+    if (export_format()) {
+        require_perm('payroll', 'export');
+        audit('export.' . export_format(), 'payroll', $ym);
+        send_export(__('الرواتب %s', $ym), "payroll-$ym", payroll_table_headers(), array_map(fn($r) => array_map(fn($v) => is_float($v) ? money($v) : $v, payroll_table_row($r)), $rows));
+    }
 }
 
 // ═════════════ Profile & requests ═════════════
 function editable_fields(): array
 {
-    return q_all('SELECT * FROM employee_field_permissions WHERE visible = 1 ORDER BY sort_order');
+    return q_all("SELECT * FROM employee_field_permissions WHERE visible = 1 ORDER BY sort_order, field = 'specialization_id'");
 }
 
 function page_my_profile(array $vars = []): void
@@ -419,10 +527,32 @@ function page_requests_post(): void
 function page_inbox(): void
 {
     $id = require_employee_self();
-    $rows = q_all('SELECT n.id, n.ntype, n.title, n.body, nt.show_at, nt.read_at FROM notification_targets nt JOIN notifications n ON n.id = nt.notification_id
-                   WHERE nt.employee_id = ? AND n.status <> "cancelled" AND nt.show_at <= NOW() AND (nt.read_at IS NOT NULL OR nt.hide_at IS NULL OR nt.hide_at > NOW())
+    $f = in_array($_GET['f'] ?? '', ['unread', 'read'], true) ? $_GET['f'] : 'all';
+    $rows = q_all('SELECT n.id, n.ntype, n.title, n.body, n.contents, n.period_month, n.report_from, n.report_to, nt.show_at, nt.read_at FROM notification_targets nt JOIN notifications n ON n.id = nt.notification_id
+                   WHERE nt.employee_id = ? AND n.status <> "cancelled" AND nt.show_at <= NOW() AND (nt.read_at IS NOT NULL OR nt.hide_at IS NULL OR nt.hide_at > NOW())'
+                   . ($f === 'unread' ? ' AND nt.read_at IS NULL' : ($f === 'read' ? ' AND nt.read_at IS NOT NULL' : '')) . '
                    ORDER BY nt.show_at DESC LIMIT 100', [$id]);
-    render('inbox', ['title' => __('الإشعارات'), 'rows' => $rows]);
+    render('inbox', ['title' => __('الإشعارات'), 'rows' => $rows, 'f' => $f, 'unread' => inbox_unread($id)]);
+}
+
+/** Notifications showing now that the employee hasn't read (the count next to «الإشعارات»). */
+function inbox_unread(int $empId): int
+{
+    static $c = [];
+    return $c[$empId] ??= (int)q_val('SELECT COUNT(*) FROM notification_targets nt JOIN notifications n ON n.id = nt.notification_id
+        WHERE nt.employee_id = ? AND n.status <> "cancelled" AND nt.read_at IS NULL AND nt.show_at <= NOW() AND (nt.hide_at IS NULL OR nt.hide_at > NOW())', [$empId]);
+}
+
+/** Old app formatRelative: «منذ ساعتين», «منذ 3 أيام»; older than a week shows the date. */
+function rel_time(string $dt, ?int $now = null): string
+{
+    $s = max(0, ($now ?? time()) - strtotime($dt));
+    if ($s < 60) return __('الآن');
+    if ($s < 3600) return __('منذ %d دقيقة', intdiv($s, 60));
+    if ($s < 86400) { $h = intdiv($s, 3600); return $h === 1 ? __('منذ ساعة') : ($h === 2 ? __('منذ ساعتين') : __('منذ %d ساعات', $h)); }
+    $d = intdiv($s, 86400);
+    if ($d < 7) return $d === 1 ? __('منذ يوم') : ($d === 2 ? __('منذ يومين') : __('منذ %d أيام', $d));
+    return substr($dt, 0, 10);
 }
 
 function page_inbox_post(): void
@@ -430,7 +560,40 @@ function page_inbox_post(): void
     $id = require_employee_self();
     $nid = in_int('id');
     if ($nid) q('UPDATE notification_targets SET read_at = NOW() WHERE notification_id = ? AND employee_id = ? AND read_at IS NULL', [$nid, $id]);
-    redirect(url('inbox'));
+    redirect(url('inbox', in_array($_POST['f'] ?? '', ['unread', 'read'], true) ? ['f' => $_POST['f']] : []));
+}
+
+/** A notification opened by its employee: a report notice shows the report itself (old attendance app op "report"). */
+function page_notif_view(): void
+{
+    $id = require_employee_self();
+    $nid = in_int('id', $_GET);
+    $n = $nid ? q_one('SELECT n.*, nt.show_at, nt.read_at FROM notification_targets nt JOIN notifications n ON n.id = nt.notification_id
+                       WHERE nt.notification_id = ? AND nt.employee_id = ? AND n.status <> "cancelled" AND nt.show_at <= NOW()
+                         AND (nt.read_at IS NOT NULL OR nt.hide_at IS NULL OR nt.hide_at > NOW())', [$nid, $id]) : null;
+    if (!$n) http_error(404);
+    if (!$n['read_at']) q('UPDATE notification_targets SET read_at = NOW() WHERE notification_id = ? AND employee_id = ? AND read_at IS NULL', [$nid, $id]);
+    $keys = array_values(array_filter(explode(',', (string)($n['contents'] ?? ''))));
+    $vars = ['title' => $n['title'], 'n' => $n, 'report' => null, 'keys' => $keys, 'sec' => [],
+             'showBody' => !$keys || in_array('message', $keys, true)];
+    $hasPeriod = $n['report_from'] && $n['report_to'];
+    $data = array_diff($keys, ['message']);
+    if (($data || $n['ntype'] === 'تقرير حضور' || $n['ntype'] === 'كشف مرتب') && !geo_gate_ok()) { $vars['geoBlocked'] = true; render('notif_view', $vars); return; }
+    $r = $hasPeriod && ($n['ntype'] === 'تقرير حضور' || array_intersect($keys, NOTIF_REPORT_KEYS)) ? att_evaluate($id, $n['report_from'], $n['report_to']) : null;
+    if ($r) $vars['sec']['att'] = $r;
+    if (in_array('profile', $keys, true)) $vars['sec']['profile'] = ['emp' => self_employee(), 'fields' => editable_fields()];
+    if (in_array('documents', $keys, true)) $vars['sec']['documents'] = doc_status_self($id);
+    if ($r && ($n['ntype'] === 'تقرير حضور' || in_array('monthlyClosing', $keys, true))) {
+        $vars['report'] = ['att_days', ['title' => __('تقرير الحضور من %s إلى %s', $n['report_from'], $n['report_to']), 'ym' => substr($n['report_from'], 0, 7),
+            'r' => $r, 'self' => true, 'embed' => true]];
+    } elseif ($n['ntype'] === 'كشف مرتب' && $n['period_month']) {
+        $ym = substr($n['period_month'], 0, 7);
+        [$from, $to, $per] = payroll_range($ym);
+        $snap = $per && $per['status'] === 'closed' ? period_snapshot((int)$per['id']) : null;
+        $pp = $snap ? (snapshot_rows((int)$snap['id'])[$id] ?? null) : payroll_compute($id, $from, $to, $ym);
+        if ($pp !== null) $vars['report'] = ['payslip', ['title' => __('كشف مرتب %s', $ym), 'ym' => $ym, 'per' => $per, 'p' => $pp, 'self' => true, 'snap' => $snap, 'embed' => true]];
+    }
+    render('notif_view', $vars);
 }
 
 // ═════════════ Audit ═════════════
@@ -468,9 +631,20 @@ function page_users_post(): void
     $me = user();
     $back = users_back();
     $mustChange = ($_POST['must_change'] ?? '1') === '1' ? 1 : 0;
+    $defHash = (string)setting('_emp_default_pw', '');
+    if ($op === 'default_password') {
+        // Old ATT_DEFAULT_PASSWORD: one default password for employee accounts, kept only as a hash.
+        $pw = (string)($_POST['password'] ?? '');
+        if ($p = password_problems($pw)) { if ($back) { flash('err', $p); redirect($back); } page_users(['error' => $p]); return; }
+        q("INSERT INTO settings (k, v, label) VALUES ('_emp_default_pw', ?, 'Employee default password (hash)') ON DUPLICATE KEY UPDATE v = VALUES(v)", [hash_password($pw)]);
+        audit('setting.update', '_emp_default_pw', 'changed');
+        flash('ok', __('اتحفظت كلمة المرور الافتراضية للموظفين.'));
+        redirect($back ?: url('users'));
+    }
     if ($op === 'create') {
         $username = mb_strtolower(in_str('username', 64));
         $pw = (string)($_POST['password'] ?? '');
+        $useDefault = $pw === '' && $defHash !== '' && in_int('employee_id');
         $role = in_int('role_id');
         $emp = in_int('employee_id');
         if ($username === '' && $emp) $username = (string)$emp; // employee accounts: username = employee code
@@ -482,17 +656,17 @@ function page_users_post(): void
         elseif ($emp && q_val('SELECT 1 FROM users WHERE employee_id = ?', [$emp])) $err = __('الموظف ده عنده حساب بالفعل.');
         elseif ($emp && !q_val('SELECT 1 FROM employees WHERE id = ?', [$emp])) $err = __('الموظف غير موجود.');
         elseif (!q_val('SELECT is_staff FROM roles WHERE id = ?', [$role]) && !$emp) $err = __('حساب الموظف لازم يكون مربوط بموظف.');
-        elseif ($p = password_problems($pw, $username)) $err = $p;
+        elseif (!$useDefault && ($p = password_problems($pw, $username))) $err = $p;
         if ($err) { if ($back) { flash('err', $err); redirect($back); } page_users(['error' => $err]); return; }
         q('INSERT INTO users (username, display_name, password_hash, role_id, employee_id, must_change_password) VALUES (?,?,?,?,?,?)',
-            [$username, in_str('display_name', 150) ?: null, hash_password($pw), $role, $emp, $mustChange]);
+            [$username, in_str('display_name', 150) ?: null, $useDefault ? $defHash : hash_password($pw), $role, $emp, $useDefault ? 1 : $mustChange]);
         audit('user.create', $username, ['role' => $role, 'employee' => $emp]);
         flash('ok', $mustChange ? __('تم إنشاء المستخدم. هيُطلب منه تغيير كلمة المرور أول دخول.') : __('تم إنشاء المستخدم.'));
     } elseif ($op === 'bulk_employees') {
         $pw = (string)($_POST['password'] ?? '');
-        if ($p = password_problems($pw)) { page_users(['error' => $p]); return; }
+        if (!($pw === '' && $defHash !== '') && ($p = password_problems($pw))) { page_users(['error' => $p]); return; }
         $role = (int)q_val("SELECT id FROM roles WHERE slug = 'employee'");
-        $hash = hash_password($pw);
+        $hash = $pw === '' ? $defHash : hash_password($pw);
         $n = 0;
         foreach (q_all('SELECT e.id FROM employees e LEFT JOIN users u ON u.employee_id = e.id WHERE u.id IS NULL AND (e.end_date IS NULL OR e.end_date >= CURDATE())') as $e) {
             if (q_val('SELECT 1 FROM users WHERE username = ?', [(string)$e['id']])) continue;
@@ -521,6 +695,15 @@ function page_users_post(): void
                 q('UPDATE users SET password_hash = ?, legacy_hash = NULL, legacy_salt = NULL, must_change_password = ?, failed_logins = 0, locked_until = NULL, session_epoch = session_epoch + 1 WHERE id = ?', [hash_password($pw), $mustChange, $id]);
                 audit('user.reset_password', $u['username'], ['must_change' => $mustChange]);
                 flash('ok', $mustChange ? __('تم تعيين كلمة المرور، وهيُطلب منه يغيّرها أول ما يدخل.') : __('تم تغيير كلمة المرور.'));
+                break;
+            case 'reset_default':
+                // Old adminResetEmployeePassword_: back to the default password, logged in the employee history.
+                if ($defHash === '' || !$u['employee_id']) { flash('err', __('مفيش كلمة مرور افتراضية محفوظة، أو الحساب ده مش حساب موظف.')); redirect($back ?: url('users')); }
+                q('UPDATE users SET password_hash = ?, legacy_hash = NULL, legacy_salt = NULL, must_change_password = 1, failed_logins = 0, locked_until = NULL, session_epoch = session_epoch + 1 WHERE id = ?', [$defHash, $id]);
+                q('INSERT INTO employee_change_log (employee_id, field, old_value, new_value, reason, changed_by, op_id) VALUES (?,?,?,?,?,?,?)',
+                    [$u['employee_id'], 'password', '', '', 'إعادة تعيين كلمة المرور للافتراضي', $me['username'], bin2hex(random_bytes(8))]);
+                audit('user.reset_default_password', $u['username']);
+                flash('ok', __('كلمة المرور رجعت للافتراضية، وهيُطلب منه يغيّرها أول ما يدخل.'));
                 break;
             case 'toggle':
                 q('UPDATE users SET active = 1 - active, session_epoch = session_epoch + 1 WHERE id = ?', [$id]);
@@ -599,39 +782,230 @@ function page_roles_post(): void
     redirect(url('roles'));
 }
 
-// ═════════════ Super admin: settings ═════════════
+// ═════════════ Super admin: settings (old «الإعدادات» screen: one card per job) ═════════════
+// How each general setting is edited; a key missing here stays a plain text box.
+const SETTING_TYPES = [
+    'checkin_require_photo' => 'bool', 'face_enabled' => 'bool', 'geofence_enforce' => 'bool', 'self_geo_gate' => 'bool',
+    'checkin_cooldown_sec' => 'int', 'remember_days' => 'int',
+    'weekend_days' => 'weekdays', 'day_divisor' => 'int', 'doc_expiry_alert_days' => 'int',
+    'face_max_failures' => 'int', 'face_consent_version' => 'int',
+    'face_match_threshold' => 'decimal', 'face_min_yaw_range' => 'decimal',
+    'face_consent_text' => 'long', 'face_consent_text_en' => 'long',
+];
+const WEEKDAYS = [6 => 'السبت', 7 => 'الأحد', 1 => 'الاثنين', 2 => 'الثلاثاء', 3 => 'الأربعاء', 4 => 'الخميس', 5 => 'الجمعة'];
+
 function page_settings(): void
 {
     require_manager();
-    render('settings', ['title' => __('الإعدادات'), 'rows' => q_all('SELECT * FROM settings ORDER BY k'), 'fields' => q_all('SELECT * FROM employee_field_permissions ORDER BY sort_order')]);
+    $today = date('Y-m-d');
+    render('settings', [
+        'title'  => __('الإعدادات'),
+        'rows'   => q_all("SELECT * FROM settings WHERE k NOT LIKE '\\_%' AND k <> 'auto_employee_code' ORDER BY k"),
+        'fields' => q_all("SELECT * FROM employee_field_permissions ORDER BY sort_order, field = 'specialization_id'"),
+        'depts'  => q_all('SELECT id, name, active, attendance_exempt FROM departments ORDER BY name'),
+        'jobs'   => q_all('SELECT id, name, active FROM job_titles ORDER BY name'),
+        'specs'  => q_all('SELECT id, name, active FROM specializations ORDER BY name'),
+        'auto_code' => setting('auto_employee_code', '1') !== '0',
+        'exempt_emps' => q_all('SELECT e.id, e.name_ar, d.name AS dept FROM employees e LEFT JOIN departments d ON d.id = e.department_id WHERE e.attendance_exempt = 1 ORDER BY e.id'),
+        'free_emps'   => q_all('SELECT id, name_ar FROM employees WHERE attendance_exempt = 0 AND (end_date IS NULL OR end_date > ?) ORDER BY id', [$today]),
+        'years'  => q_all('SELECT * FROM academic_years ORDER BY date_from DESC'),
+        'edit_year' => in_int('edit_year', $_GET),
+        'checks' => ($_GET['check'] ?? '') === '1' ? system_checks() : null,
+    ]);
 }
 
 function page_settings_post(): void
 {
     require_manager();
+    $op = (string)($_POST['op'] ?? 'general');
+    $back = url('settings') . (in_array($op, ['name_add', 'name_rename', 'name_toggle'], true) ? '#names' : (str_starts_with($op, 'exempt') ? '#exempt' : (str_starts_with($op, 'year') ? '#years' : '')));
+    $err = match ($op) {
+        'general'  => settings_save_general(),
+        'fields'   => settings_save_fields(),
+        'autocode' => settings_save_autocode(),
+        'name_add', 'name_rename', 'name_toggle' => settings_name_list($op),
+        'exempt_dept_add', 'exempt_dept_remove', 'exempt_emp_add', 'exempt_emp_remove' => settings_exempt($op),
+        'year_add', 'year_update', 'year_activate' => settings_year($op),
+        default => __('عملية غير معروفة.'),
+    };
+    if ($err) flash('err', $err); else flash('ok', __('تم الحفظ.'));
+    redirect($back);
+}
+
+function settings_save_general(): ?string
+{
     $vals = is_array($_POST['s'] ?? null) ? $_POST['s'] : [];
-    foreach (q_all('SELECT k, v FROM settings') as $s) {
+    $days = is_array($_POST['weekend'] ?? null) ? array_values(array_intersect(array_keys(WEEKDAYS), array_map('intval', $_POST['weekend']))) : [];
+    sort($days);
+    $vals['weekend_days'] = implode(',', $days);
+    $rows = q_all("SELECT k, v, label FROM settings WHERE k NOT LIKE '\\_%' AND k <> 'auto_employee_code'");
+    $new = [];
+    foreach ($rows as $s) {
+        $type = SETTING_TYPES[$s['k']] ?? 'text';
+        if ($type === 'bool') { $new[$s['k']] = !empty($vals[$s['k']]) ? '1' : '0'; continue; }
         if (!isset($vals[$s['k']]) || !is_string($vals[$s['k']])) continue;
-        $long = in_array($s['k'], ['face_consent_text', 'face_consent_text_en'], true);
-        $v = mb_substr(str_replace("\r\n", "\n", trim($vals[$s['k']])), 0, $long ? 5000 : 500);
-        if ($long && $v !== (string)$s['v'] && ($vals['face_consent_version'] ?? '') === (string)setting('face_consent_version')) {
-            // Changing the consent wording always requires everyone to agree again.
-            q("UPDATE settings SET v = v + 1 WHERE k = 'face_consent_version'");
+        $v = mb_substr(str_replace("\r\n", "\n", trim($vals[$s['k']])), 0, $type === 'long' ? 5000 : 500);
+        $label = __($s['label'] ?: $s['k']);
+        if ($type === 'int' && !preg_match('/^\d{1,6}$/', $v)) return __('%s لازم يكون رقم صحيح.', $label);
+        if ($type === 'decimal' && (!is_numeric($v) || (float)$v < 0 || (float)$v > 1)) return __('%s لازم يكون رقم من 0 لـ 1.', $label);
+        $new[$s['k']] = $v;
+    }
+    if (($new['day_divisor'] ?? '30') === '0') return __('%s لازم يكون أكبر من صفر.', __('قاسم اليوم'));
+    $old = array_column($rows, 'v', 'k');
+    foreach (['face_consent_text', 'face_consent_text_en'] as $k) {
+        // Changing the consent wording always requires everyone to agree again.
+        if (isset($new[$k]) && $new[$k] !== (string)$old[$k] && ($new['face_consent_version'] ?? '') === (string)$old['face_consent_version']) {
+            $new['face_consent_version'] = (string)((int)$old['face_consent_version'] + 1);
             audit('setting.update', 'face_consent_version', 'auto-bumped because the consent text changed');
-            $vals['face_consent_version'] = (string)((int)setting('face_consent_version') + 1);
-        }
-        if ($v !== (string)$s['v']) {
-            q('UPDATE settings SET v = ? WHERE k = ?', [$v, $s['k']]);
-            audit('setting.update', $s['k'], ['from' => $s['v'], 'to' => $v]);
         }
     }
+    foreach ($new as $k => $v) {
+        if ($v === (string)$old[$k]) continue;
+        q('UPDATE settings SET v = ? WHERE k = ?', [$v, $k]);
+        audit('setting.update', $k, ['from' => $old[$k], 'to' => $v]);
+    }
+    return null;
+}
+
+function settings_save_fields(): ?string
+{
     $fp = is_array($_POST['f'] ?? null) ? $_POST['f'] : [];
     foreach (q_all('SELECT field FROM employee_field_permissions') as $f) {
         $r = is_array($fp[$f['field']] ?? null) ? $fp[$f['field']] : [];
         q('UPDATE employee_field_permissions SET visible = ?, editable = ?, required = ? WHERE field = ?', [!empty($r['visible']) ? 1 : 0, !empty($r['editable']) ? 1 : 0, !empty($r['required']) ? 1 : 0, $f['field']]);
     }
-    flash('ok', __('تم حفظ الإعدادات.'));
-    redirect(url('settings'));
+    audit('settings.employee_fields');
+    return null;
+}
+
+/** Old SettingsService.setAutoCode. */
+function settings_save_autocode(): ?string
+{
+    $v = ($_POST['auto_code'] ?? '') === '1' ? '1' : '0';
+    $old = (string)setting('auto_employee_code', '1');
+    if ($v !== $old) {
+        q('UPDATE settings SET v = ? WHERE k = ?', [$v, 'auto_employee_code']);
+        audit('settings.autoCode', null, $v === '1' ? 'نعم' : 'لا');
+    }
+    return null;
+}
+
+/** Old NameListService.manage: add | rename | setActive — never deletes, employee data untouched. */
+function settings_name_list(string $op): ?string
+{
+    $kind = in_array($_POST['kind'] ?? '', ['job', 'spec'], true) ? $_POST['kind'] : 'dept';
+    $table = ['dept' => 'departments', 'job' => 'job_titles', 'spec' => 'specializations'][$kind];
+    $label = ['dept' => __('القسم'), 'job' => __('المسمى الوظيفي'), 'spec' => __('التخصص')][$kind];
+    $norm = fn(string $x) => preg_replace('/\s+/u', ' ', trim($x));
+    $taken = fn(string $name, int $except = 0) => (bool)q_val("SELECT 1 FROM `$table` WHERE name = ? AND id <> ?", [$name, $except]);
+    if ($op === 'name_add') {
+        $name = $norm(in_str('name', 150));
+        if ($name === '') return __('الاسم مطلوب.');
+        if ($taken($name)) return __('%s «%s» موجود بالفعل.', $label, $name);
+        q("INSERT INTO `$table` (name, active) VALUES (?, 1)", [$name]);
+        audit('nameList.add', "$kind:$name");
+        return null;
+    }
+    $row = q_one("SELECT * FROM `$table` WHERE id = ?", [in_int('id') ?? 0]);
+    if (!$row) return __('%s مش موجود.', $label);
+    if ($op === 'name_rename') {
+        $name = $norm(in_str('name', 150));
+        if ($name === '') return __('الاسم الجديد مطلوب.');
+        if ($name === $row['name']) return null;
+        if ($taken($name, (int)$row['id'])) return __('%s «%s» موجود بالفعل.', $label, $name);
+        q("UPDATE `$table` SET name = ? WHERE id = ?", [$name, $row['id']]);
+        audit('nameList.rename', "$kind:{$row['name']}", $name);
+        return null;
+    }
+    q("UPDATE `$table` SET active = 1 - active WHERE id = ?", [$row['id']]);
+    audit('nameList.setActive', "$kind:{$row['name']}", $row['active'] ? 'لا' : 'نعم');
+    return null;
+}
+
+/** Old exemptCard: departments exempt from attendance, and employees exempted by hand (with a history row). */
+function settings_exempt(string $op): ?string
+{
+    $id = in_int('id') ?? 0;
+    if ($op === 'exempt_dept_add' || $op === 'exempt_dept_remove') {
+        $d = q_one('SELECT id, name FROM departments WHERE id = ?', [$id]);
+        if (!$d) return __('اختار قسم.');
+        $on = $op === 'exempt_dept_add' ? 1 : 0;
+        q('UPDATE departments SET attendance_exempt = ? WHERE id = ?', [$on, $id]);
+        audit($on ? 'exemptDept.add' : 'exemptDept.remove', $d['name']);
+        return null;
+    }
+    $e = q_one('SELECT id, attendance_exempt FROM employees WHERE id = ?', [$id]);
+    if (!$e) return __('اختار موظف.');
+    $on = $op === 'exempt_emp_add' ? 1 : 0;
+    if ((int)$e['attendance_exempt'] === $on) return null;
+    db()->beginTransaction();
+    q('UPDATE employees SET attendance_exempt = ? WHERE id = ?', [$on, $id]);
+    q('INSERT INTO employee_change_log (employee_id, field, old_value, new_value, reason, changed_by, op_id) VALUES (?,?,?,?,?,?,?)',
+        [$id, 'attendance_exempt', (string)(1 - $on), (string)$on, $on ? 'إعفاء يدوي من البصمة' : 'إلغاء الإعفاء اليدوي من البصمة', user()['username'], bin2hex(random_bytes(8))]);
+    db()->commit();
+    audit($on ? 'employee.exempt' : 'employee.unexempt', $id);
+    return null;
+}
+
+/** Old AcademicYearService: add (inactive), update, setActive (only one active year). */
+function settings_year(string $op): ?string
+{
+    if ($op === 'year_activate') {
+        $y = q_one('SELECT id, name FROM academic_years WHERE id = ?', [in_int('id') ?? 0]);
+        if (!$y) return __('السنة مش موجودة.');
+        academic_year_activate((int)$y['id']);
+        audit('academicYear.setActive', $y['name']);
+        return null;
+    }
+    $name = trim(in_str('name', 100));
+    $from = valid_date($_POST['date_from'] ?? null);
+    $to = valid_date($_POST['date_to'] ?? null);
+    if ($name === '') return __('اسم السنة مطلوب.');
+    if (!$from || !$to || $from > $to) return __('من تاريخ / لحد تاريخ غير صالحين.');
+    $id = $op === 'year_update' ? (in_int('id') ?? 0) : 0;
+    if ($op === 'year_update' && !q_val('SELECT 1 FROM academic_years WHERE id = ?', [$id])) return __('السنة مش موجودة.');
+    if (q_val('SELECT 1 FROM academic_years WHERE name = ? AND id <> ?', [$name, $id])) return __('السنة موجودة بالفعل.');
+    if ($id) {
+        q('UPDATE academic_years SET name = ?, date_from = ?, date_to = ? WHERE id = ?', [$name, $from, $to, $id]);
+        audit('academicYear.update', $name, ['from' => $from, 'to' => $to]);
+    } else {
+        q('INSERT INTO academic_years (name, date_from, date_to, active, created_by) VALUES (?,?,?,0,?)', [$name, $from, $to, user()['username']]);
+        audit('academicYear.add', $name, ['from' => $from, 'to' => $to]);
+    }
+    return null;
+}
+
+/** Old «التحقق من البيئة», for this server: read-only checks, each PASS / FAIL with a short detail. */
+function system_checks(): array
+{
+    $out = [];
+    $add = function (string $name, bool $ok, string $detail) use (&$out) { $out[] = ['name' => $name, 'ok' => $ok, 'detail' => $detail]; };
+    try {
+        $add(__('قاعدة البيانات'), true, (string)q_val('SELECT VERSION()'));
+        $tables = q('SHOW TABLES')->fetchAll(PDO::FETCH_COLUMN);
+        preg_match_all('/CREATE TABLE IF NOT EXISTS `?(\w+)`?/', (string)@file_get_contents(dirname(__DIR__) . '/database/schema.sql'), $m);
+        $missing = array_diff($m[1], $tables);
+        $add(__('جداول النظام'), !$missing, $missing ? __('ناقص: %s', implode(', ', $missing)) : __('%d جدول', count($tables)));
+    } catch (Throwable $e) {
+        $add(__('قاعدة البيانات'), false, __('مش متاحة'));
+    }
+    $add('PHP', PHP_VERSION_ID >= 80100, PHP_VERSION);
+    $ext = array_filter(['pdo_mysql', 'mbstring', 'zip', 'fileinfo', 'zlib', 'curl'], fn($x) => !extension_loaded($x));
+    $add(__('إضافات PHP'), !$ext, $ext ? __('ناقص: %s', implode(', ', $ext)) : 'pdo_mysql, mbstring, zip, fileinfo, zlib, curl');
+    foreach (['backups' => __('فولدر النسخ الاحتياطية'), 'uploads' => __('فولدر الملفات المرفوعة'), 'tmp' => __('فولدر الملفات المؤقتة')] as $dir => $label) {
+        $path = config('storage_dir') . '/' . $dir;
+        if (!is_dir($path)) @mkdir($path, 0750, true);
+        $add($label, is_dir($path) && is_writable($path), is_writable($path) ? __('قابل للكتابة') : __('مش قابل للكتابة'));
+    }
+    if (face_enabled()) {
+        $h = face_health();
+        $add(__('خدمة بصمة الوجه'), $h, $h ? __('شغالة') : __('مش بترد'));
+    }
+    $last = q_val('SELECT MAX(at) FROM backups_log');
+    $age = $last ? (int)floor((time() - strtotime((string)$last)) / 86400) : null;
+    $add(__('آخر نسخة احتياطية'), $age !== null && $age <= 7, $last ? __('%s (من %d يوم)', $last, $age) : __('مفيش نسخ لسه'));
+    audit('system.verify', null, count(array_filter($out, fn($c) => !$c['ok'])) . ' fail');
+    return $out;
 }
 
 // ═════════════ Employees: Excel template / upload ═════════════

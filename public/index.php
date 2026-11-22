@@ -5,6 +5,10 @@ declare(strict_types=1);
 require dirname(__DIR__) . '/app/bootstrap.php';
 require APP_ROOT . '/app/pages.php';
 require APP_ROOT . '/app/pages_face.php';
+require APP_ROOT . '/app/pages_salary.php';
+require APP_ROOT . '/app/pages_hr.php';
+require APP_ROOT . '/app/pages_reports.php';
+require APP_ROOT . '/app/pages_admin.php';
 
 send_security_headers();
 
@@ -24,7 +28,7 @@ if ($method === 'POST') csrf_verify();
 if ($route === 'login') { $method === 'POST' ? page_login_post() : page_login(); exit; }
 if ($route === 'lang' && $method === 'POST') { page_lang_post(); exit; }
 
-$GLOBALS['USER'] = current_user();
+$GLOBALS['USER'] = current_user() ?? remember_login();
 if (!$GLOBALS['USER']) {
     if ($route !== '' && $route !== 'logout') flash('err', __('سجّل دخولك الأول.'));
     redirect(url('login'));
@@ -56,6 +60,8 @@ $routes = [
     'my_salary'     => ['page_my_salary', null],
     'my_profile'    => ['page_my_profile', 'page_my_profile_post'],
     'inbox'         => ['page_inbox', 'page_inbox_post'],
+    'notif_view'    => ['page_notif_view', null],
+    'geo_check'     => [fn() => redirect(url()), 'page_geo_check_post'],
     'photo'         => ['page_photo', null],
     'face_consent'  => ['page_face_consent', 'page_face_consent_post'],
     'face_enroll'   => ['page_face_enroll', 'page_face_enroll_post'],
@@ -69,6 +75,31 @@ $routes = [
     'att_report'    => ['page_att_report', null],
     'att_employee'  => ['page_att_employee', null],
     'payroll'       => ['page_payroll', 'page_payroll_close'],
+    'summer'        => ['page_summer', 'page_summer_post'],
+    'quarter_policy'=> ['page_quarter_policy', 'page_quarter_policy_post'],
+    'periods'       => ['page_periods', null],
+    'period'        => ['page_period', 'page_period_post'],
+    'raises'        => ['page_raises', 'page_raises_post'],
+    'basic_salaries'=> ['page_basic_salaries', 'page_basic_salaries_post'],
+    'advances_report' => ['page_advances_report', 'page_advances_report_post'],
+    'doc_file'      => ['page_doc_file', null],
+    'doc_reports'   => ['page_doc_reports', null],
+    'employee'      => ['page_employee', null],
+    'inv'           => ['page_inv', 'page_inv_post'],
+    'inv_edit'      => ['page_inv_edit', 'page_inv_edit_post'],
+    'inv_file'      => ['page_inv_file', null],
+    'notif_cancel'  => [null, 'page_notif_cancel_post'],
+    'holiday_calendar' => ['page_holiday_calendar', 'page_holiday_calendar_post'],
+    'sched_rules'   => ['page_sched_rules', 'page_sched_rules_post'],
+    'late_of_day'   => ['page_late_of_day', null],
+    'att_adjust'    => ['page_att_adjust', null],
+    'reports'       => ['page_reports', null],
+    'report'        => ['page_report', null],
+    'whatsapp'      => ['page_whatsapp', 'page_whatsapp_post'],
+    'backup'        => ['page_backup', 'page_backup_post'],
+    'backup_file'   => ['page_backup_file', null],
+    'drive_import'  => ['page_drive_import', 'page_drive_import_post'],
+    'data_reset'    => ['page_data_reset', 'page_data_reset_post'],
     'requests'      => ['page_requests', 'page_requests_post'],
     'emp_import'    => ['page_emp_import', 'page_emp_import_post'],
     'emp_template'  => ['page_emp_template', null],
@@ -80,6 +111,9 @@ $routes = [
 ];
 
 if (!isset($routes[$route])) http_error(404);
+
+// Old employee app: own data, documents and reports open only inside the school (notifications stay open).
+if (in_array($route, ['my_attendance', 'my_salary', 'my_profile', 'doc_file'], true) || ($route === 'my' && res_key() === 'employee_documents')) geo_gate_require();
 $handler = $routes[$route][$method === 'POST' ? 1 : 0];
 if ($handler === null) http_error($method === 'POST' ? 400 : 404);
 

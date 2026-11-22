@@ -1,15 +1,25 @@
 <?php
 declare(strict_types=1);
 
-/** Minimal .xlsx writer: right-to-left sheets, bold header row, text or numeric cells. Requires ext-zip. */
+/** Minimal .xlsx writer: right-to-left sheets, bold header row, text or numeric cells, optional dropdown/validation rules. Requires ext-zip. */
 final class XlsxWriter
 {
-    /** @var list<array{name:string, rows:list<list<mixed>>, widths:list<int>}> */
+    /** @var list<array{name:string, rows:list<list<mixed>>, widths:list<int>, rules:list<array>}> */
     private array $sheets = [];
 
-    public function addSheet(string $name, array $rows, array $widths = []): void
+    /**
+     * $rules: data validation, each ['ref' => 'D2:D1000', 'list' => "'Sheet'!\$A\$2:\$A\$9"] for a dropdown
+     * or ['ref' => ..., 'custom' => 'formula'] for a formula check, or neither for a hint only; optional 'title', 'error', 'prompt'.
+     */
+    public function addSheet(string $name, array $rows, array $widths = [], array $rules = []): void
     {
-        $this->sheets[] = ['name' => mb_substr(preg_replace('#[\\\\/?*\[\]:]#u', ' ', $name), 0, 31), 'rows' => $rows, 'widths' => $widths];
+        $this->sheets[] = ['name' => self::sheetName($name), 'rows' => $rows, 'widths' => $widths, 'rules' => $rules];
+    }
+
+    /** The name a sheet gets in the file (for list references to it). */
+    public static function sheetName(string $name): string
+    {
+        return mb_substr(preg_replace('#[\\\\/?*\[\]:]#u', ' ', $name), 0, 31);
     }
 
     public function save(string $file): void
@@ -63,7 +73,20 @@ final class XlsxWriter
             }
             $xml .= '</row>';
         }
-        return $xml . '</sheetData></worksheet>';
+        $xml .= '</sheetData>';
+        if ($s['rules']) {
+            $xml .= '<dataValidations count="' . count($s['rules']) . '">';
+            foreach ($s['rules'] as $v) {
+                $type = isset($v['list']) ? 'list' : (isset($v['custom']) ? 'custom' : 'none');
+                $xml .= '<dataValidation type="' . $type . '" allowBlank="1" showInputMessage="1" showErrorMessage="' . (empty($v['free']) ? '1' : '0') . '" errorStyle="stop"'
+                    . (isset($v['title']) ? ' errorTitle="' . self::x($v['title']) . '" promptTitle="' . self::x($v['title']) . '"' : '')
+                    . (isset($v['error']) ? ' error="' . self::x($v['error']) . '"' : '')
+                    . (isset($v['prompt']) ? ' prompt="' . self::x($v['prompt']) . '"' : '')
+                    . ' sqref="' . self::x($v['ref']) . '">' . ($type === 'none' ? '' : '<formula1>' . self::x($v['list'] ?? $v['custom']) . '</formula1>') . '</dataValidation>';
+            }
+            $xml .= '</dataValidations>';
+        }
+        return $xml . '</worksheet>';
     }
 
     private static function col(int $i): string

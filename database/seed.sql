@@ -34,13 +34,12 @@ INSERT INTO settings (k, v, label, note) VALUES
  ('weekend_days', '5,6', 'أيام العطلة الأسبوعية', 'أرقام ISO مفصولة بفاصلة: 1=الاثنين … 5=الجمعة، 6=السبت، 7=الأحد'),
  ('geofence_enforce', '1', 'منع البصمة خارج نقاط الحضور', '1 = يرفض البصمة لو الموظف بعيد عن كل النقاط، 0 = يسجلها مع المسافة'),
  ('checkin_require_photo', '0', 'إلزام صورة سيلفي مع البصمة', '1 = إلزامي'),
- ('late_rounding', 'ceil', 'تقريب وحدات التأخير', 'ceil = أي جزء من الوحدة يتحسب وحدة، floor = الوحدات الكاملة بس'),
  ('day_divisor', '30', 'قسمة الراتب لحساب قيمة اليوم', NULL)
 ON DUPLICATE KEY UPDATE label = VALUES(label);
 
 INSERT INTO employee_field_permissions (field, label, visible, editable, required, sort_order) VALUES
  ('name_ar','الاسم بالعربي',1,1,1,1), ('name_en','الاسم بالإنجليزي',1,1,0,2), ('phone','رقم الهاتف',1,1,1,3),
- ('nationality','الجنسية',1,1,0,4), ('department_id','القسم',1,0,0,6), ('job_title_id','المسمى الوظيفي',1,0,0,7),
+ ('nationality','الجنسية',1,1,0,4), ('department_id','القسم',1,0,0,6), ('specialization_id','التخصص',1,0,0,6), ('job_title_id','المسمى الوظيفي',1,0,0,7),
  ('hire_date','تاريخ التعيين',1,0,0,8)
 ON DUPLICATE KEY UPDATE label = VALUES(label);
 
@@ -60,4 +59,14 @@ I understand that:
 - The frames captured at each check-in are deleted immediately after the comparison.
 - Only the system administrator can view the reference photo, and the photo and template are deleted automatically when my employment ends.
 - I may request information about my data or withdraw my consent by contacting Human Resources; an alternative attendance arrangement will then be needed.', 'نص الموافقة على معالجة بصمة الوجه (إنجليزي)', 'بيظهر للي مختار اللغة الإنجليزية. أي تعديل فيه بيرفع رقم الإصدار')
+ON DUPLICATE KEY UPDATE label = VALUES(label);
+
+-- Late units are always floor(cumulative minutes / unit), like the old GHIS; the rounding switch is gone.
+DELETE FROM settings WHERE k = 'late_rounding';
+
+-- Old employee app parity: location gate, check-in wait, remember me
+INSERT INTO settings (k, v, label, note) VALUES
+ ('self_geo_gate', '1', 'بيانات الموظف تفتح من جوه المدرسة بس', '1 = بياناتي وحضوري ومرتبي ومستنداتي وتقارير الإشعارات بتظهر للموظف وهو جوه نقطة حضور بس (الإشعارات نفسها متاحة دايمًا)'),
+ ('checkin_cooldown_sec', '30', 'ثواني الانتظار بين محاولات البصمة', 'زي التطبيق القديم: 30 ثانية بعد أي محاولة تسجيل'),
+ ('remember_days', '30', 'مدة "تذكّر تسجيل الدخول" بالأيام', 'لحسابات الموظفين بس. 0 = الخيار مقفول')
 ON DUPLICATE KEY UPDATE label = VALUES(label);

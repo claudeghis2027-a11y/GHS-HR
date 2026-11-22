@@ -10,6 +10,7 @@
       $val = $emp[$k] ?? '';
       if ($k === 'department_id') $val = $val ? (fk_options(['fk' => ['departments', 'name']])[$val] ?? '') : '';
       if ($k === 'job_title_id') $val = $val ? (fk_options(['fk' => ['job_titles', 'name']])[$val] ?? '') : '';
+      if ($k === 'specialization_id') $val = $val ? (fk_options(['fk' => ['specializations', 'name']])[$val] ?? '') : '';
       $canEdit = $f['editable'] && !$pending && in_array($k, ['name_ar', 'name_en', 'phone', 'nationality'], true);
   ?>
     <label><?= e(__($f['label'])) ?><?= $f['required'] && $canEdit ? ' *' : '' ?>

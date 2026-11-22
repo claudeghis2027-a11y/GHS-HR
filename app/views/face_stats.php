@@ -10,7 +10,7 @@ $labels = ['match' => 'مطابق', 'no_match' => 'مش مطابق', 'ok' => 'ص
     <label class="inline"><?= e(__('من')) ?> <input type="date" name="from" value="<?= e($from) ?>"></label>
     <label class="inline"><?= e(__('إلى')) ?> <input type="date" name="to" value="<?= e($to) ?>"></label>
     <button class="btn small"><?= e(__('عرض')) ?></button>
-    <a class="btn small" href="<?= e(url('face_stats', ['from' => $from, 'to' => $to, 'export' => 'csv'])) ?>">CSV</a>
+    <?= export_links('face_stats', ['from' => $from, 'to' => $to]) ?>
   </form>
 </div>
 <div class="stats">

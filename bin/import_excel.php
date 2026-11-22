@@ -294,7 +294,7 @@ try {
     }
     $empRows = [
         ['الإجازات الشخصية المعتمدة', 'leaves', fn($r) => ['date_from' => d(v($r, 'من تاريخ')), 'date_to' => d(v($r, 'لحد تاريخ')), 'reason' => nn((string)v($r, 'السبب'))]],
-        ['تعديلات الحضور', 'attendance_adjustments', fn($r) => ['adj_date' => d(v($r, 'التاريخ')), 'adj_type' => 'other', 'value' => mb_substr(trim(v($r, 'نوع التعديل') . ': ' . v($r, 'القيمة')), 0, 100),
+        ['تعديلات الحضور', 'attendance_adjustments', fn($r) => ['adj_date' => d(v($r, 'التاريخ')), 'adj_type' => legacy_adj_type((string)v($r, 'نوع التعديل')), 'value' => legacy_adj_value((string)v($r, 'نوع التعديل'), v($r, 'القيمة')),
             'reason' => nn((string)v($r, 'السبب')), 'created_by' => nn((string)v($r, 'المستخدم')), 'created_at' => dt(v($r, 'تاريخ التسجيل'))]],
         ['سجل الأذونات', 'permission_requests', fn($r) => ['perm_date' => d(v($r, 'التاريخ')), 'created_by' => nn((string)v($r, 'المستخدم')), 'created_at' => dt(v($r, 'تاريخ التسجيل'))]],
         ['سجل نسيان تسجيل الحضورالانصراف', 'forgot_punch_log', fn($r) => ['punch_date' => d(v($r, 'التاريخ')), 'created_by' => nn((string)v($r, 'المستخدم')), 'created_at' => dt(v($r, 'تاريخ التسجيل'))]],
@@ -354,7 +354,7 @@ try {
     }
     foreach ($DB->records('سجل خصم واسترداد الصيف') as $r) {
         if (!$empOk(v($r, 'كود الموظف'))) continue;
-        ins('summer_deduction_log', ['employee_id' => (int)v($r, 'كود الموظف'), 'month_no' => (int)v($r, 'الشهر'), 'year_no' => (int)v($r, 'السنة'),
+        ins('summer_deduction_log', ['employee_id' => (int)v($r, 'كود الموظف'), 'month_no' => legacy_month_no(v($r, 'الشهر')), 'year_no' => (int)v($r, 'السنة'),
             'basic_salary' => nn(v($r, 'الراتب الأساسي وقتها')), 'amount' => (float)v($r, 'المبلغ المخصوم فعليًا'), 'refund_status' => nn((string)v($r, 'حالة الرد')),
             'refunded_at' => d(v($r, 'تاريخ الرد الفعلي')), 'ded_type' => nn((string)v($r, 'نوع الخصم')), 'created_by' => nn((string)v($r, 'المستخدم')), 'created_at' => dt(v($r, 'تاريخ التسجيل'))]);
     }
@@ -454,3 +454,24 @@ try {
     exit(1);
 }
 echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), "\n";
+
+/** Old adjustment type names → new codes (old types: getAdjustmentsMap_). */
+function legacy_adj_type(string $t): string
+{
+    return ['تعديل وقت الحضور' => 'set_check_in', 'تعديل وقت الانصراف' => 'set_check_out', 'تسجيل حضور يدوي' => 'force_present',
+            'تسجيل غياب يدوي' => 'force_absent', 'استثناء اليوم من الحساب' => 'waive_day'][trim($t)] ?? 'other';
+}
+
+function legacy_adj_value(string $type, $value): ?string
+{
+    if (legacy_adj_type($type) === 'other') return mb_substr(trim($type . ': ' . $value), 0, 100);
+    if (is_float($value) && $value < 1) { $m = (int)round($value * 1440); return sprintf('%02d:%02d', intdiv($m, 60) % 24, $m % 60); } // Excel time fraction
+    return preg_match('/(\d{1,2}):(\d{2})/', (string)$value, $mm) ? sprintf('%02d:%02d', $mm[1], $mm[2]) : null;
+}
+
+/** The old summer log stores the month as its Arabic name (يوليو / أغسطس). */
+function legacy_month_no($v): int
+{
+    $i = array_search(trim((string)$v), AR_MONTHS, true);
+    return $i !== false ? (int)$i : (int)$v;
+}

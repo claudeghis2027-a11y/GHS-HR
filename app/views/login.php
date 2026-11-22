@@ -22,6 +22,9 @@
         <label><?= e(__('كلمة المرور')) ?>
           <input type="password" name="password" required maxlength="200" autocomplete="current-password" dir="ltr">
         </label>
+        <?php if (remember_days() > 0): ?>
+        <label class="check"><input type="checkbox" name="remember" value="1"> <?= e(__('تذكّر تسجيل الدخول على الجهاز ده')) ?></label>
+        <?php endif; ?>
         <button class="btn primary wide"><?= e(__('دخول')) ?></button>
       </form>
       <p class="secure-note">🔒 <?= e(__('اتصال مشفّر. لو نسيت كلمة المرور كلّم إدارة الموارد البشرية.')) ?></p>

@@ -9,18 +9,50 @@ const EMP_SHEET = 'الموظفين';
 const EMP_COLS = [
     'id'            => 'كود الموظف',
     'name_ar'       => 'الاسم بالعربي',
-    'name_en'       => 'الاسم بالإنجليزي',
+    'name_en'       => 'الاسم بالإنجليزي (من برنامج البصمة)',
     'department'    => 'القسم',
+    'specialization' => 'التخصص',
     'job_title'     => 'المسمى الوظيفي',
     'hire_date'     => 'تاريخ التعيين',
     'end_date'      => 'تاريخ نهاية الخدمة',
-    'exempt'        => 'معفى من البصمة (نعم/لا)',
+    'exempt'        => 'معفى يدويًا من البصمة؟ (نعم/لا)',
     'nationality'   => 'الجنسية',
     'phone'         => 'رقم التليفون',
     'pay_method'    => 'طريقة القبض (كاش/فيزا)',
+    'bank'          => 'البنك',
+    'papers'        => 'استلم أوراقه بعد ترك الخدمة؟ (نعم/لا)',
+    'summer'        => 'خصم الصيف',
+    'first_year'    => 'خصم السنة الأولى',
+    'first_raise'   => 'شهر أول علاوة مستحقة',
+    'fy_exception'  => 'استثناء خصم السنة الأولى',
     'basic_salary'  => 'الراتب الأساسي',
     'salary_from'   => 'تاريخ بدء الراتب',
     'role'          => 'الصلاحية',
+];
+/** Headers of templates downloaded before the columns were renamed; still read. */
+const EMP_COL_ALIASES = ['name_en' => 'الاسم بالإنجليزي', 'exempt' => 'معفى من البصمة (نعم/لا)'];
+/** Fixed values (same as the employee form). */
+const EMP_SUMMER = ['ربع', 'ربعين'];
+const EMP_FIRST_YEAR = ['شهر واحد', 'شهرين'];
+const EMP_FY_EXCEPTION = ['1', '2', '3', '4'];
+const EMP_NATIONALITIES = ['مصري', 'سوداني', 'سوري', 'أردني', 'فلسطيني', 'سعودي', 'ليبي', 'عراقي', 'يمني', 'لبناني', 'تونسي', 'مغربي', 'جزائري', 'بريطاني', 'أمريكي', 'كندي', 'أخرى'];
+/** Shown when a cell of that column is selected. */
+const EMP_NOTES = [
+    'id'           => 'سيبه فاضي لموظف جديد عشان يتولد تلقائيًا. لو الكود موجود، بيانات الموظف بتتحدث.',
+    'name_ar'      => 'إلزامي لموظف جديد.',
+    'name_en'      => 'زي ما هو مكتوب في برنامج البصمة.',
+    'specialization' => 'بيتختار من القائمة. التخصصات بتتضاف من صفحة «التخصصات».',
+    'hire_date'    => 'مثلًا 2026-10-01 أو 1/10/2026.',
+    'end_date'     => 'سيبه فاضي لو الموظف لسه شغال.',
+    'phone'        => 'بالصفر في الأول، مثلًا 01012345678.',
+    'bank'         => 'بيتكتب بس لو طريقة القبض فيزا. البنوك بتتضاف من صفحة «البنوك».',
+    'summer'       => 'فاضي = حسب القسم. ربع = يوليو. ربعين = يوليو + أغسطس.',
+    'first_year'   => 'شهر واحد = يوليو. شهرين = يوليو + أغسطس.',
+    'first_raise'  => 'أي يوم في الشهر، مثلًا 2027-09-01.',
+    'fy_exception' => '1: نص يوليو بلا رد. 2: نص يوليو + نص أغسطس بلا رد. 3: ربع يوليو. 4: ربع يوليو + ربع أغسطس.',
+    'basic_salary' => 'لو اتغير، القيمة القديمة بتتقفل يوم قبل تاريخ بدء الراتب.',
+    'salary_from'  => 'الافتراضي أول الشهر الحالي.',
+    'role'         => 'لو مكتوبة، بيتعمل للموظف حساب دخول أو بتتغير صلاحيته. للأدمن بس.',
 ];
 
 function emp_import_dir(): string
@@ -40,38 +72,83 @@ function current_basic(int $empId): ?array
 function emp_template_file(bool $filled): string
 {
     $withSalary = can('salary', 'view') && can('salary', 'export');
-    $head = array_values(EMP_COLS);
-    $rows = [$head];
+    $rows = [array_values(EMP_COLS)];
     if ($filled) {
         [$w, $p] = scope_sql('e');
         $roles = [];
         foreach (q_all('SELECT u.employee_id, r.name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.employee_id IS NOT NULL') as $r) $roles[$r['employee_id']] = $r['name'];
-        foreach (q_all("SELECT e.*, d.name dept, j.name job FROM employees e LEFT JOIN departments d ON d.id = e.department_id LEFT JOIN job_titles j ON j.id = e.job_title_id WHERE $w ORDER BY e.id", $p) as $e) {
+        foreach (q_all("SELECT e.*, d.name dept, s.name spec, j.name job, b.name bank FROM employees e LEFT JOIN departments d ON d.id = e.department_id LEFT JOIN job_titles j ON j.id = e.job_title_id
+                        LEFT JOIN specializations s ON s.id = e.specialization_id
+                        LEFT JOIN banks b ON b.id = e.bank_id WHERE $w ORDER BY e.id", $p) as $e) {
             $b = $withSalary ? current_basic((int)$e['id']) : null;
-            $rows[] = [(string)$e['id'], $e['name_ar'], $e['name_en'], $e['dept'], $e['job'], $e['hire_date'], $e['end_date'], $e['attendance_exempt'] ? 'نعم' : 'لا',
-                       $e['nationality'], $e['phone'], ['cash' => 'كاش', 'visa' => 'فيزا'][$e['pay_method'] ?? ''] ?? '',
-                       $b ? (float)$b['amount'] : '', $b ? $b['date_from'] : '', is_manager() ? ($roles[$e['id']] ?? '') : ''];
+            $v = ['id' => (string)$e['id'], 'name_ar' => $e['name_ar'], 'name_en' => $e['name_en'], 'department' => $e['dept'], 'specialization' => $e['spec'], 'job_title' => $e['job'],
+                  'hire_date' => $e['hire_date'], 'end_date' => $e['end_date'], 'exempt' => $e['attendance_exempt'] ? 'نعم' : 'لا', 'nationality' => $e['nationality'],
+                  'phone' => $e['phone'], 'pay_method' => ['cash' => 'كاش', 'visa' => 'فيزا'][$e['pay_method'] ?? ''] ?? '', 'bank' => $e['pay_method'] === 'visa' ? $e['bank'] : '', 'papers' => $e['papers_received'] ? 'نعم' : 'لا',
+                  'summer' => $e['summer_deduction'], 'first_year' => $e['first_year_deduction'], 'first_raise' => $e['first_raise_month'] ? substr($e['first_raise_month'], 0, 10) : '',
+                  'fy_exception' => $e['first_year_exception'], 'basic_salary' => $b ? (float)$b['amount'] : '', 'salary_from' => $b ? $b['date_from'] : '',
+                  'role' => is_manager() ? ($roles[$e['id']] ?? '') : ''];
+            $rows[] = array_map(fn($k) => $v[$k] ?? '', array_keys(EMP_COLS));
         }
     }
-    $lists = [['الأقسام', 'المسميات الوظيفية', 'الصلاحيات', 'نعم/لا', 'طريقة القبض']];
-    $depts = array_values(fk_options(['fk' => ['departments', 'name']]));
-    $jobs = array_values(fk_options(['fk' => ['job_titles', 'name']]));
-    $roleNames = array_column(q_all('SELECT name FROM roles WHERE active = 1 AND is_super = 0 ORDER BY is_staff, name'), 'name');
-    for ($i = 0; $i < max(count($depts), count($jobs), count($roleNames), 2); $i++) {
-        $lists[] = [$depts[$i] ?? '', $jobs[$i] ?? '', $roleNames[$i] ?? '', ['نعم', 'لا'][$i] ?? '', ['كاش', 'فيزا'][$i] ?? ''];
+    $nats = EMP_NATIONALITIES;
+    foreach (q_all("SELECT DISTINCT nationality FROM employees WHERE nationality IS NOT NULL AND nationality <> '' ORDER BY nationality") as $n) {
+        if (!in_array($n['nationality'], $nats, true)) array_splice($nats, -1, 0, [$n['nationality']]); // before «أخرى»
     }
+    // column on the lists sheet => [title, values, employees-sheet columns that pick from it]
+    $choices = [
+        ['الأقسام', array_values(fk_options(['fk' => ['departments', 'name']])), ['department']],
+        ['المسميات الوظيفية', array_values(fk_options(['fk' => ['job_titles', 'name']])), ['job_title']],
+        ['التخصصات', array_values(fk_options(['fk' => ['specializations', 'name']])), ['specialization']],
+        ['الصلاحيات', array_column(q_all('SELECT name FROM roles WHERE active = 1 AND is_super = 0 ORDER BY is_staff, name'), 'name'), ['role']],
+        ['نعم/لا', ['نعم', 'لا'], ['exempt', 'papers']],
+        ['طريقة القبض', ['كاش', 'فيزا'], ['pay_method']],
+        ['البنوك', array_column(q_all('SELECT name FROM banks WHERE active = 1 ORDER BY name'), 'name'), ['bank']],
+        ['الجنسية', $nats, ['nationality']],
+        ['خصم الصيف', EMP_SUMMER, ['summer']],
+        ['خصم السنة الأولى', EMP_FIRST_YEAR, ['first_year']],
+        ['استثناء خصم السنة الأولى', EMP_FY_EXCEPTION, ['fy_exception']],
+    ];
+    $lists = [array_column($choices, 0)];
+    for ($i = 0; $i < max(array_map(fn($c) => count($c[1]), $choices)); $i++) $lists[] = array_map(fn($c) => $c[1][$i] ?? '', $choices);
+    // dropdowns on the employees sheet, fed by the lists sheet, so a typo can't get in
+    $last = count($rows) + 1000;
+    $col = fn(string $k) => chr(65 + array_search($k, array_keys(EMP_COLS), true));
+    $ls = "'" . XlsxWriter::sheetName('القوائم') . "'!";
+    $rules = []; $ruled = [];
+    foreach ($choices as $li => $c) {
+        [, $vals, $keys] = $c;
+        $free = !empty($c[3]); // suggestions only: any other value is accepted
+        if (!$vals) continue;
+        $L = chr(65 + $li);
+        foreach ($keys as $k) {
+            $rules[] = ['ref' => $col($k) . '2:' . $col($k) . $last, 'list' => $ls . '$' . $L . '$2:$' . $L . '$' . (count($vals) + 1), 'title' => mb_substr(EMP_COLS[$k], 0, 32),
+                        'error' => __('اختار من القائمة بس. لو القيمة مش موجودة، ضيفها في النظام الأول ونزّل القالب تاني.')] + ($free ? ['free' => true] : []) + (isset(EMP_NOTES[$k]) ? ['prompt' => EMP_NOTES[$k]] : []);
+            $ruled[$k] = true;
+        }
+    }
+    $A = $col('id');
+    $rules[] = ['ref' => "{$A}2:{$A}$last", 'custom' => "AND(ISNUMBER(--{$A}2),--{$A}2>=1,INT(--{$A}2)=--{$A}2,COUNTIF(\${$A}\$2:\${$A}\$$last,{$A}2)=1)",
+                'title' => EMP_COLS['id'], 'error' => __('كود الموظف لازم يكون رقم صحيح ومايتكررش في الملف.'), 'prompt' => EMP_NOTES['id']];
+    $ruled['id'] = true;
+    foreach (EMP_NOTES as $k => $note) if (!isset($ruled[$k])) $rules[] = ['ref' => $col($k) . '2:' . $col($k) . $last, 'title' => mb_substr(EMP_COLS[$k], 0, 32), 'prompt' => $note];
     $help = [['تعليمات'],
         ['كل صف = موظف. "الاسم بالعربي" إلزامي.'],
         ['كود الموظف: سيبه فاضي لموظف جديد عشان يتولد تلقائيًا. لو الكود موجود، بيانات الموظف بتتحدث.'],
-        ['القسم والمسمى والصلاحية لازم يكونوا مكتوبين زي شيت "القوائم" بالظبط.'],
-        ['التواريخ بصيغة 2026-10-01 (أو تاريخ Excel عادي).'],
+        ['القسم والتخصص والمسمى والصلاحية والجنسية ونعم/لا وطريقة القبض والبنك وخانات الخصم بتتختار من القائمة المنسدلة في الخانة (جاية من شيت "القوائم").'],
+        ['لو قسم أو تخصص أو مسمى مش موجود في القائمة، ضيفه في النظام الأول ونزّل القالب تاني.'],
+        ['البنك: بيتكتب بس لو طريقة القبض فيزا. لو البنك مش في القائمة، الأدمن يضيفه من صفحة "البنوك" وتنزّل القالب تاني.'],
+        ['لو هتنسخ بيانات من ملف تاني، الصق "قيم فقط" (Paste Values) عشان القوائم ماتتمسحش.'],
+        ['التواريخ بصيغة 2026-10-01 (أو تاريخ Excel عادي). شهر أول علاوة: اكتب أي يوم في الشهر.'],
+        ['خصم الصيف: فاضي = حسب القسم، ربع = يوليو، ربعين = يوليو + أغسطس. خصم السنة الأولى: شهر واحد = يوليو، شهرين = يوليو + أغسطس.'],
+        ['استثناء خصم السنة الأولى: 1 = نص يوليو بلا رد، 2 = نص يوليو + نص أغسطس بلا رد، 3 = ربع يوليو، 4 = ربع يوليو + ربع أغسطس.'],
+        ['حط الماوس على أي خانة عشان تشوف شرحها.'],
         ['الراتب الأساسي: لو اتغير، القيمة القديمة بتتقفل يوم قبل "تاريخ بدء الراتب" (الافتراضي أول الشهر الحالي) وبتتسجل الجديدة.'],
         ['الصلاحية: لو مكتوبة، بيتعمل للموظف حساب دخول (اسم المستخدم = الكود) أو بتتغير صلاحية حسابه. للسوبر أدمن بس.'],
         ['خلية فاضية = سيب القيمة الحالية زي ما هي.'],
     ];
     $x = new XlsxWriter();
-    $x->addSheet(EMP_SHEET, $rows, [12, 26, 26, 18, 18, 14, 16, 18, 14, 16, 18, 14, 16, 18]);
-    $x->addSheet('القوائم', $lists, [22, 22, 22, 10, 14]);
+    $x->addSheet(EMP_SHEET, $rows, [12, 26, 30, 18, 18, 18, 14, 16, 20, 14, 16, 18, 20, 22, 12, 16, 16, 18, 14, 16, 18], $rules);
+    $x->addSheet('القوائم', $lists, [22, 22, 22, 22, 10, 14, 22, 14, 12, 16, 22]);
     $x->addSheet('تعليمات', $help, [110]);
     $file = tempnam(emp_import_dir(), 'tpl');
     $x->save($file);
@@ -98,12 +175,19 @@ function emp_import_parse(string $file): array
     if (!$raw) return ['fatal' => __('الشيت فاضي.')];
     $head = array_map(fn($h) => trim((string)$h), array_shift($raw));
     $idx = [];
-    foreach (EMP_COLS as $k => $label) { $i = array_search($label, $head, true); if ($i !== false) $idx[$k] = $i; }
+    foreach (EMP_COLS as $k => $label) {
+        $i = array_search($label, $head, true);
+        if ($i === false && isset(EMP_COL_ALIASES[$k])) $i = array_search(EMP_COL_ALIASES[$k], $head, true);
+        if ($i !== false) $idx[$k] = $i;
+    }
     if (!isset($idx['name_ar'])) return ['fatal' => __('عمود "الاسم بالعربي" مش موجود. استخدم القالب من غير ما تغيّر العناوين.')];
     if (count($raw) > 5000) return ['fatal' => __('أقصى عدد 5000 صف في المرة.')];
 
     $depts = array_change_key_case(array_flip(fk_options(['fk' => ['departments', 'name']])));
     $jobs = array_change_key_case(array_flip(fk_options(['fk' => ['job_titles', 'name']])));
+    $specs = array_change_key_case(array_flip(fk_options(['fk' => ['specializations', 'name']])));
+    $banks = [];
+    foreach (q_all('SELECT id, name FROM banks WHERE active = 1') as $b) $banks[mb_strtolower(trim($b['name']))] = (int)$b['id'];
     $roles = [];
     foreach (q_all('SELECT id, name, is_staff FROM roles WHERE active = 1 AND is_super = 0') as $r) $roles[mb_strtolower($r['name'])] = $r;
     $scope = dept_scope();
@@ -139,7 +223,7 @@ function emp_import_parse(string $file): array
             $phone = is_float($phone) || is_int($phone) ? '0' . (string)(int)$phone : (string)$phone;
             if (!preg_match('/^[0-9+\- ]{6,30}$/', $phone)) $err[] = __('رقم التليفون غير صحيح.'); else $f['phone'] = $phone;
         }
-        foreach (['department' => [$depts, 'department_id', 'القسم'], 'job_title' => [$jobs, 'job_title_id', 'المسمى الوظيفي']] as $k => [$map, $col, $label]) {
+        foreach (['department' => [$depts, 'department_id', 'القسم'], 'specialization' => [$specs, 'specialization_id', 'التخصص'], 'job_title' => [$jobs, 'job_title_id', 'المسمى الوظيفي']] as $k => [$map, $col, $label]) {
             $v = (string)$get($k);
             if ($v === '') continue;
             if (!isset($map[mb_strtolower($v)])) $err[] = __('%s "%s" مش موجود في القوائم.', __($label), $v);
@@ -153,8 +237,29 @@ function emp_import_parse(string $file): array
         }
         $ex = (string)$get('exempt');
         if ($ex !== '') { if (!in_array($ex, ['نعم', 'لا'], true)) $err[] = __('معفى من البصمة: اكتب نعم أو لا.'); else $f['attendance_exempt'] = $ex === 'نعم' ? 1 : 0; }
+        $pp = (string)$get('papers');
+        if ($pp !== '') { if (!in_array($pp, ['نعم', 'لا'], true)) $err[] = __('استلم أوراقه: اكتب نعم أو لا.'); else $f['papers_received'] = $pp === 'نعم' ? 1 : 0; }
+        foreach (['summer' => [EMP_SUMMER, 'summer_deduction'], 'first_year' => [EMP_FIRST_YEAR, 'first_year_deduction'], 'fy_exception' => [EMP_FY_EXCEPTION, 'first_year_exception']] as $k => [$allowed, $c]) {
+            $v = $get($k);
+            $v = is_float($v) || is_int($v) ? (string)(int)$v : (string)$v;
+            if ($v === '') continue;
+            if (!in_array($v, $allowed, true)) $err[] = __('%s: القيم المسموحة %s.', __(EMP_COLS[$k]), implode(' / ', $allowed)); else $f[$c] = $v;
+        }
+        $fr = $get('first_raise');
+        if (is_string($fr) && preg_match('/^(\d{4})-(\d{1,2})$/', $fr, $m)) $fr = sprintf('%04d-%02d-01', $m[1], $m[2]);
+        $fr = xl_date($fr);
+        if ($fr === false) $err[] = __('%s تاريخ غير صحيح.', __(EMP_COLS['first_raise'])); elseif ($fr) $f['first_raise_month'] = substr($fr, 0, 8) . '01';
         $pm = (string)$get('pay_method');
         if ($pm !== '') { $pmv = ['كاش' => 'cash', 'فيزا' => 'visa'][$pm] ?? null; if (!$pmv) $err[] = __('طريقة القبض: كاش أو فيزا.'); else $f['pay_method'] = $pmv; }
+        $bank = (string)$get('bank');
+        $payAfter = $f['pay_method'] ?? ($existing['pay_method'] ?? null);
+        if ($bank !== '') {
+            if ($payAfter !== 'visa') $err[] = __('البنك بيتكتب بس لو طريقة القبض فيزا.');
+            elseif (!isset($banks[mb_strtolower($bank)])) $err[] = __('البنك "%s" مش موجود في قائمة البنوك.', $bank);
+            else $f['bank_id'] = $banks[mb_strtolower($bank)];
+        } elseif ($payAfter !== 'visa' && !empty($existing['bank_id'])) {
+            $f['bank_id'] = null; // moved to cash: the bank no longer applies
+        }
 
         $salary = null;
         $sal = $get('basic_salary');

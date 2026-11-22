@@ -4,14 +4,29 @@ declare(strict_types=1);
 // Modules used by the permission matrix (super-admin-only modules are not listed here).
 const MODULES = [
     'employees'      => 'الموظفين',
+    'end_of_service' => 'تقارير نهاية الخدمة',
     'attendance'     => 'الحضور والانصراف',
+    'attendance_adjust' => 'إعفاءات التأخير وتعديلات الحضور',
+    'permissions'    => 'الأذونات',
     'rules'          => 'قواعد المواعيد والخصم والعطلات',
     'salary'         => 'المرتبات والسلف',
+    'payroll'        => 'كشف المرتبات',
+    'period_close'   => 'إنشاء وإقفال فترات المرتبات',
+    'period_reopen'  => 'إعادة فتح فترة مرتبات مقفولة',
     'documents'      => 'المستندات',
+    'docs_types'     => 'إدارة أنواع المستندات',
+    'docs_reports'   => 'تقارير المستندات',
     'investigations' => 'التحقيقات',
     'notifications'  => 'الإشعارات',
     'reports'        => 'التقارير',
+    'whatsapp'       => 'رسائل واتساب',
+    'backup'         => 'النسخ الاحتياطي',
     'audit'          => 'سجل التدقيق',
+];
+// Old COARSE_IMPLIES_: a fine permission is also granted by its larger module (same action).
+const MODULE_PARENT = [
+    'end_of_service' => 'employees', 'attendance_adjust' => 'attendance', 'permissions' => 'attendance',
+    'payroll' => 'salary', 'period_close' => 'salary', 'docs_types' => 'documents', 'docs_reports' => 'documents',
 ];
 const ACTIONS = ['view', 'create', 'update', 'delete', 'export'];
 
@@ -161,6 +176,17 @@ function attempt_login(string $username, string $password): array
         return ['ok' => false, 'msg' => $generic];
     }
 
+    session_open_for($u);
+    q('UPDATE users SET failed_logins = 0, locked_until = NULL, last_login_at = NOW() WHERE id = ?', [$u['id']]);
+    $GLOBALS['USER'] = $u;
+    audit('auth.login', $u['username']);
+    return ['ok' => true, 'user' => $u];
+}
+
+/** Starts a fresh signed-in session for $u (a password login or a remembered device). */
+function session_open_for(array $u): void
+{
+    if (session_status() !== PHP_SESSION_ACTIVE) session_start();
     session_regenerate_id(true);
     $_SESSION = [
         'uid'     => (int)$u['id'],
@@ -171,10 +197,61 @@ function attempt_login(string $username, string $password): array
         'ua'      => hash('sha256', (string)($_SERVER['HTTP_USER_AGENT'] ?? '')),
         'csrf'    => bin2hex(random_bytes(32)),
     ];
-    q('UPDATE users SET failed_logins = 0, locked_until = NULL, last_login_at = NOW() WHERE id = ?', [$u['id']]);
-    $GLOBALS['USER'] = $u;
-    audit('auth.login', $u['username']);
-    return ['ok' => true, 'user' => $u];
+}
+
+// ───────────── Remember me (old employee app «تذكّر تسجيل الدخول»; employee accounts only) ─────────────
+// The cookie holds "selector:validator"; the database keeps only a SHA-256 of the validator. A token is used once
+// and replaced, and stops working when the password changes or the account is reset (session_epoch moves).
+function remember_cookie(): string { return is_https() ? '__Secure-ghishr_rm' : 'ghishr_rm'; }
+
+function remember_days(): int { return max(0, min(365, (int)setting('remember_days', '30'))); }
+
+function remember_set_cookie(string $value, int $expires): void
+{
+    setcookie(remember_cookie(), $value, ['expires' => $expires, 'path' => base_path() . '/', 'secure' => is_https(), 'httponly' => true, 'samesite' => 'Lax']);
+}
+
+function remember_issue(array $u): void
+{
+    $days = remember_days();
+    if ($days === 0) return;
+    $selector = bin2hex(random_bytes(9));
+    $validator = random_bytes(32);
+    $expires = time() + $days * 86400;
+    q('INSERT INTO remember_tokens (user_id, selector, token_hash, epoch, ua_hash, expires_at) VALUES (?,?,?,?,?,?)',
+        [$u['id'], $selector, hash('sha256', $validator), (int)$u['session_epoch'], hash('sha256', (string)($_SERVER['HTTP_USER_AGENT'] ?? '')), date('Y-m-d H:i:s', $expires)]);
+    remember_set_cookie($selector . ':' . bin2hex($validator), $expires);
+}
+
+/** Signs in from a remembered device; returns the user as current_user() does, or null. */
+function remember_login(): ?array
+{
+    $c = $_COOKIE[remember_cookie()] ?? '';
+    if (!is_string($c) || !preg_match('/^([a-f0-9]{18}):([a-f0-9]{64})$/', $c, $m)) return null;
+    if (random_int(1, 50) === 1) q('DELETE FROM remember_tokens WHERE expires_at < NOW()');
+    $t = q_one('SELECT * FROM remember_tokens WHERE selector = ?', [$m[1]]);
+    $forget = function () use ($m) { q('DELETE FROM remember_tokens WHERE selector = ?', [$m[1]]); remember_set_cookie('', time() - 3600); return null; };
+    if (!$t) return $forget();
+    if (!hash_equals($t['token_hash'], hash('sha256', (string)hex2bin($m[2])))) { audit('auth.remember_mismatch', (int)$t['user_id']); return $forget(); }
+    $u = q_one('SELECT u.*, r.is_staff, r.active role_active FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?', [$t['user_id']]);
+    if (strtotime($t['expires_at']) < time() || !$u || !$u['active'] || !$u['role_active'] || $u['is_staff'] || $u['employee_id'] === null
+        || (int)$u['session_epoch'] !== (int)$t['epoch'] || !hash_equals($t['ua_hash'], hash('sha256', (string)($_SERVER['HTTP_USER_AGENT'] ?? '')))
+        || remember_days() === 0) return $forget();
+    q('DELETE FROM remember_tokens WHERE id = ?', [$t['id']]);
+    remember_issue($u);
+    session_open_for($u);
+    q('UPDATE users SET last_login_at = NOW() WHERE id = ?', [$u['id']]);
+    $user = current_user();
+    if ($user) { $GLOBALS['USER'] = $user; audit('auth.remember_login', $user['username']); }
+    return $user;
+}
+
+/** Logout: this device stops being remembered. */
+function remember_forget(): void
+{
+    $c = $_COOKIE[remember_cookie()] ?? '';
+    if (is_string($c) && preg_match('/^([a-f0-9]{18}):/', $c, $m)) q('DELETE FROM remember_tokens WHERE selector = ?', [$m[1]]);
+    if ($c !== '') remember_set_cookie('', time() - 3600);
 }
 
 /** Hashes imported from the Google Sheets system (SHA-256 + salt, exact order unknown). */
@@ -185,6 +262,7 @@ function verify_legacy(string $pw, string $hash, string $salt): bool
     $cands = [
         hash('sha256', $salt . $pw), hash('sha256', $pw . $salt), hash('sha256', $pw),
         hash_hmac('sha256', $pw, $salt), hash_hmac('sha256', $salt, $pw),
+        hash('sha256', $salt . '::' . $pw), // old GHIS U.hash: SHA-256(salt + '::' + password)
         hash('sha256', $salt . ':' . $pw), hash('sha256', $pw . ':' . $salt),
     ];
     foreach ($cands as $c) if (hash_equals($c, $hash)) return true;
@@ -210,7 +288,9 @@ function can(string $module, string $action = 'view'): bool
     if (!$u) return false;
     if ($u['is_super'] || ($u['role_slug'] ?? '') === 'admin') return true;
     if (!$u['is_staff']) return false;
-    return !empty($u['perms'][$module]['can_' . $action]);
+    if (!empty($u['perms'][$module]['can_' . $action])) return true;
+    $parent = MODULE_PARENT[$module] ?? null;
+    return $parent !== null && !empty($u['perms'][$parent]['can_' . $action]);
 }
 
 function require_perm(string $module, string $action = 'view'): void

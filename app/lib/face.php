@@ -77,6 +77,22 @@ function face_params(): array
 }
 
 /** Calls the local face service. Returns decoded JSON or ['ok'=>false,'code'=>'service',...]. */
+/** True when the face service answers GET /health (for the settings server check). */
+function face_health(): bool
+{
+    $cfg = config('face') ?? [];
+    $ch = curl_init();
+    $opts = [CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_TIMEOUT => 5, CURLOPT_PROXY => '', CURLOPT_NOPROXY => '*',
+        CURLOPT_HTTPHEADER => ['X-Face-Token: ' . ($cfg['token'] ?? '')]];
+    if (!empty($cfg['socket'])) { $opts[CURLOPT_UNIX_SOCKET_PATH] = $cfg['socket']; $opts[CURLOPT_URL] = 'http://localhost/health'; }
+    else { $opts[CURLOPT_URL] = rtrim((string)($cfg['url'] ?? 'http://127.0.0.1:8765'), '/') . '/health'; }
+    curl_setopt_array($ch, $opts);
+    $raw = curl_exec($ch);
+    curl_close($ch);
+    $res = is_string($raw) ? json_decode($raw, true) : null;
+    return is_array($res) && !empty($res['ok']);
+}
+
 function face_call(string $path, array $body): array
 {
     $cfg = config('face') ?? [];

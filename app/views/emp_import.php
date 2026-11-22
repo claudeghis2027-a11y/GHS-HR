@@ -42,7 +42,7 @@
   <?php endif; ?>
 
   <?php if ($res['rows']): ?>
-    <?php $colLabels = ['name_ar' => 'الاسم بالعربي', 'name_en' => 'الاسم بالإنجليزي', 'department_id' => 'القسم', 'job_title_id' => 'المسمى الوظيفي', 'hire_date' => 'تاريخ التعيين', 'end_date' => 'تاريخ نهاية الخدمة', 'attendance_exempt' => 'معفى من البصمة', 'nationality' => 'الجنسية', 'phone' => 'رقم التليفون', 'pay_method' => 'طريقة القبض']; ?>
+    <?php $colLabels = ['name_ar' => 'الاسم بالعربي', 'name_en' => 'الاسم بالإنجليزي', 'department_id' => 'القسم', 'specialization_id' => 'التخصص', 'job_title_id' => 'المسمى الوظيفي', 'hire_date' => 'تاريخ التعيين', 'end_date' => 'تاريخ نهاية الخدمة', 'attendance_exempt' => 'معفى من البصمة', 'nationality' => 'الجنسية', 'phone' => 'رقم التليفون', 'pay_method' => 'طريقة القبض', 'bank_id' => 'البنك', 'papers_received' => 'استلم أوراقه', 'summer_deduction' => 'خصم الصيف', 'first_year_deduction' => 'خصم السنة الأولى', 'first_raise_month' => 'شهر أول علاوة مستحقة', 'first_year_exception' => 'استثناء خصم السنة الأولى']; ?>
     <div class="table-wrap"><table class="small"><thead><tr><th><?= e(__('الصف')) ?></th><th><?= e(__('الكود')) ?></th><th><?= e(__('الاسم')) ?></th><th><?= e(__('العملية')) ?></th><th><?= e(__('الحقول المتغيرة')) ?></th><th><?= e(__('الراتب')) ?></th></tr></thead><tbody>
       <?php foreach ($res['rows'] as $r): ?>
         <tr><td class="num"><?= (int)$r['row'] ?></td><td><?= $r['id'] === null ? e(__('تلقائي')) : (int)$r['id'] ?></td><td><?= e($r['name']) ?></td>

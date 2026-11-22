@@ -1,0 +1,95 @@
+/*
+ * Print design system: one look for everything that leaves the system on paper or as PDF.
+ *  - Standalone printable reports (report_print, table_print) load this file for screen and print.
+ *  - Every app page loads it with media="print": the same letterhead, tables and footer, and the
+ *    screen chrome (menu, buttons, forms, filters) is dropped. Rules for app pages are scoped to body.app.
+ * Paper: A4 portrait by default; wide tables switch to A4 landscape (body.paper-a4l / print-wide) or A3 (paper-a3l).
+ */
+:root { --p-ink: #123166; --p-text: #1f2937; --p-muted: #5b6474; --p-line: #c9ced8; --p-soft: #eef3fb; --p-zebra: #f7f8fb; }
+
+@page { size: A4 portrait; margin: 12mm 10mm 14mm;
+  @bottom-left { content: counter(page) " / " counter(pages); font: 7.5pt Arial, sans-serif; color: #666; }
+  @bottom-right { content: "Green Heights International School"; font: 7.5pt Arial, sans-serif; color: #666; } }
+@page land { size: A4 landscape; margin: 10mm;
+  @bottom-left { content: counter(page) " / " counter(pages); font: 7.5pt Arial, sans-serif; color: #666; } }
+@page big { size: A3 landscape; margin: 10mm;
+  @bottom-left { content: counter(page) " / " counter(pages); font: 7.5pt Arial, sans-serif; color: #666; } }
+body.paper-a4l, body.print-wide { page: land; }
+body.paper-a3l, body.print-xwide { page: big; }
+
+/* ── Letterhead (_print_head.php) ── */
+.ph { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 2.5px solid var(--p-ink); padding-bottom: 6px; margin-bottom: 8px; }
+.ph-brand { display: flex; gap: 10px; align-items: center; }
+.ph-brand strong { display: block; font-size: 12pt; color: var(--p-ink); }
+.ph-brand span, .ph-meta { font-size: 7.5pt; color: var(--p-muted); }
+.ph-meta { text-align: end; line-height: 1.6; }
+.ph-meta b { color: var(--p-text); }
+.ph-title { font-size: 14pt; color: var(--p-ink); margin: 0 0 5px; }
+.ph-chips { margin-bottom: 8px; }
+.ph-chips:empty { display: none; }
+.ph-chips span { display: inline-block; background: var(--p-soft); color: var(--p-ink); border: 1px solid rgba(18, 49, 102, .14); border-radius: 20px; padding: 1px 9px; font-size: 7.5pt; margin: 0 0 3px; margin-inline-end: 4px;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+/* ── Standalone printable report pages ── */
+body:not(.app) { font-family: Arial, "Times New Roman", sans-serif; margin: 12px; color: var(--p-text); background: #fff; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; font-size: 13px; }
+.toolbar button { background: var(--p-ink); color: #fff; border: 0; border-radius: 6px; padding: 6px 14px; cursor: pointer; font: inherit; }
+.toolbar a { color: var(--p-ink); padding: 4px 8px; border-radius: 6px; text-decoration: none; border: 1px solid var(--p-line); }
+.toolbar a.on { background: var(--p-soft); font-weight: bold; }
+.toolbar .hint { color: var(--p-muted); font-size: 12px; }
+body:not(.app) table { width: 100%; border-collapse: collapse; font-size: 8.5pt; }
+body:not(.app) table.cols-many { font-size: 6.5pt; }
+.totals { margin-top: 9px; padding: 7px 9px; background: var(--p-soft); border: 1px solid rgba(18, 49, 102, .12); border-radius: 6px; page-break-inside: avoid; }
+.totals span { display: inline-block; min-width: 150px; font-size: 8pt; margin: 2px 0; margin-inline-end: 10px; }
+.totals b { color: var(--p-ink); }
+.foot { margin-top: 10px; padding-top: 5px; border-top: 1px solid #d5dae3; display: flex; justify-content: space-between; font-size: 7pt; color: #666; }
+
+/* ── Tables: same look everywhere ── */
+thead { display: table-header-group; }
+tr { page-break-inside: avoid; break-inside: avoid; }
+body:not(.app) th, body.app th { background: var(--p-ink); color: #fff; font-weight: bold; padding: 4px 4px; text-align: center; border: 1px solid #0d2650; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body:not(.app) td, body.app td { padding: 3px 4px; text-align: center; border: 1px solid var(--p-line); overflow-wrap: break-word; }
+body:not(.app) tbody tr:nth-child(even) td, body.app tbody tr:nth-child(even) td { background: var(--p-zebra); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+td.name { text-align: start; }
+
+@media print {
+  .no-print, .toolbar { display: none !important; }
+  body:not(.app) { margin: 0; }
+}
+
+/* ── App pages printed with the browser (layout.php links this file as media="print") ── */
+body.app { background: #fff !important; color: var(--p-text); font-size: 9.5pt; margin: 0; }
+body.app .ph-wrap[hidden] { display: block !important; }
+body.app .topbar, body.app .side, body.app .btn, body.app button, body.app form, body.app .filters, body.app .flash, body.app details,
+body.app .no-print, body.app .actions, body.app .profile-actions, body.app .nav-count, body.app input, body.app select, body.app textarea { display: none !important; }
+body.app .shell { display: block !important; }
+body.app .main { padding: 0 !important; margin: 0 !important; max-width: none !important; width: auto !important; }
+body.app a { color: inherit !important; text-decoration: none !important; }
+body.app .page-head { display: block; margin: 0 0 6px; }
+body.app .page-head h1 { display: none; }                      /* the title is in the letterhead */
+body.app .page-head .sub { font-size: 8.5pt; color: var(--p-muted); }
+body.app .card { background: none !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; margin: 0 0 10px !important; border-radius: 0 !important; }
+body.app .card::before, body.app .card::after { display: none !important; }
+body.app .card > h2, body.app .card > h3, body.app h2 { font-size: 11pt; color: var(--p-ink); border-bottom: 1px solid var(--p-line); padding-bottom: 3px; margin: 8px 0 6px; break-after: avoid; }
+body.app .muted { color: var(--p-muted) !important; }
+body.app p { margin: 3px 0; }
+/* tables */
+body.app .table-wrap { overflow: visible !important; border: 0 !important; box-shadow: none !important; max-height: none !important; }
+body.app table { width: 100% !important; border-collapse: collapse !important; font-size: 8pt; table-layout: auto; }
+body.print-wide table, body.print-xwide table { font-size: 7pt; }
+body.app td.num, body.app th.num, body.app td .num { white-space: nowrap; font-variant-numeric: tabular-nums; }
+body.app tr[class*="st-"] td, body.app tr.row-warn td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body.app tfoot th { background: var(--p-soft); color: var(--p-ink); border-color: var(--p-line); }
+/* summary numbers */
+body.app .stats { display: grid !important; grid-template-columns: repeat(6, 1fr) !important; gap: 4px !important; margin: 0 0 8px !important; }
+body.app .stat { border: 1px solid var(--p-line) !important; border-radius: 4px !important; box-shadow: none !important; padding: 3px 6px !important; font-size: 7.5pt !important; background: #fff !important; break-inside: avoid; }
+body.app .stat::before, body.app .stat::after { display: none !important; }
+body.app .stat span { font-size: 11pt !important; color: var(--p-ink) !important; }
+/* profile fields */
+body.app .profile-grid { display: grid !important; grid-template-columns: repeat(3, 1fr) !important; gap: 0 12px !important; }
+body.app .profile-grid > div { border-bottom: 1px solid #e3e6ec; padding: 3px 0; break-inside: avoid; }
+body.app .profile-grid dt { font-size: 7.5pt; color: var(--p-muted); }
+body.app .profile-grid dd { margin: 0; font-weight: bold; }
+body.app .face-img { max-width: 110px; max-height: 130px; border: 1px solid var(--p-line); }
+body.app .badge { background: none !important; border: 1px solid var(--p-line); padding: 0 6px; font-size: 7.5pt; color: var(--p-text) !important; }
+body.app .wm { opacity: .06; -webkit-print-color-adjust: exact; print-color-adjust: exact; }

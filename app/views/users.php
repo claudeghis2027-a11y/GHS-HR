@@ -56,7 +56,15 @@
   <h2><?= e(__('حسابات لكل الموظفين اللي مالهمش حساب')) ?></h2>
   <?= csrf_field() ?><input type="hidden" name="op" value="bulk_employees">
   <p class="muted"><?= e(__('اسم المستخدم = كود الموظف، وكل واحد هيُطلب منه تغيير كلمة المرور أول دخول. عدد الموظفين بدون حساب: %d.', count($free_emps))) ?></p>
-  <label><?= e(__('كلمة مرور مؤقتة موحدة')) ?> <input type="password" name="password" required minlength="10" autocomplete="new-password"></label>
+  <?php $hasDef = setting('_emp_default_pw', '') !== ''; ?>
+  <label><?= e(__('كلمة مرور مؤقتة موحدة')) ?><?= $hasDef ? ' ' . e(__('(فاضي = الافتراضية)')) : '' ?> <input type="password" name="password" <?= $hasDef ? '' : 'required' ?> minlength="10" autocomplete="new-password"></label>
   <button class="btn"><?= e(__('إنشاء الحسابات')) ?></button>
+</form>
+<form method="post" action="<?= e(url('users')) ?>" class="card">
+  <h2><?= e(__('كلمة المرور الافتراضية للموظفين')) ?></h2>
+  <?= csrf_field() ?><input type="hidden" name="op" value="default_password">
+  <p class="muted"><?= e($hasDef ? __('فيه كلمة مرور افتراضية محفوظة. زرار «رجّعها للافتراضي» في ملف الموظف بيرجّع حسابه ليها.') : __('مفيش كلمة مرور افتراضية لسه.')) ?></p>
+  <label><?= e(__('كلمة المرور الافتراضية')) ?> <input type="password" name="password" required minlength="10" autocomplete="new-password"></label>
+  <button class="btn"><?= e(__('حفظ')) ?></button>
 </form>
 </div>

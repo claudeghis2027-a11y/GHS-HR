@@ -31,10 +31,10 @@ function q_all(string $sql, array $params = []): array { return q($sql, $params)
 function q_one(string $sql, array $params = []): ?array { $r = q($sql, $params)->fetch(); return $r === false ? null : $r; }
 function q_val(string $sql, array $params = []) { $r = q($sql, $params)->fetchColumn(); return $r === false ? null : $r; }
 
-function setting(string $k, $default = null)
+function setting(string $k, $default = null, bool $reload = false)
 {
     static $cache = null;
-    if ($cache === null) {
+    if ($cache === null || $reload) {
         $cache = [];
         foreach (q_all('SELECT k, v FROM settings') as $r) $cache[$r['k']] = $r['v'];
     }

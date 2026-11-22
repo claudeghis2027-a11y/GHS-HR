@@ -9,10 +9,10 @@
   <?php if ($face && $pending_photo): ?><p class="flash info"><?= e(__('صورتك المرجعية لسه مستنية موافقة الإدارة، والبصمات هتتعلّم لحد ما يتوافق عليها.')) ?></p><?php endif; ?>
   <?php if ($face && $hr_review): ?><p class="flash err"><?= e(__('بصمة الوجه اتقفلت بعد كذا محاولة فاشلة ورا بعض. كلّم الـ HR.')) ?></p><?php endif; ?>
 
-  <form method="post" action="<?= e(url('checkin')) ?>" id="checkin-form" data-require-photo="<?= !$face && $require_photo ? '1' : '0' ?>" data-face="<?= $face ? '1' : '0' ?>">
+  <form method="post" action="<?= e(url('checkin')) ?>" id="checkin-form" data-require-photo="<?= !$face && $require_photo ? '1' : '0' ?>" data-face="<?= $face ? '1' : '0' ?>" data-wait="<?= (int)($wait ?? 0) ?>" data-done="<?= e(url('checkin')) ?>">
     <?= csrf_field() ?>
     <input type="hidden" name="lat"><input type="hidden" name="lng"><input type="hidden" name="acc">
-    <input type="hidden" name="photo"><input type="hidden" name="frames"><input type="hidden" name="action">
+    <input type="hidden" name="photo"><input type="hidden" name="frames"><input type="hidden" name="action"><input type="hidden" name="attempt">
     <div class="camera" hidden>
       <video playsinline muted></video>
       <div class="cam-hint" data-hint></div>
